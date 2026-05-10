@@ -1,28 +1,92 @@
-# timeoff-service
+# ReadyOn Time-Off Microservice
+
+Backend service for employee time-off requests, cached balances, and synchronization with an external HCM system. Implements the product scope described in [TRD.md](TRD.md) and engineering rules in [agents.md](agents.md).
+
+## Stack
+
+- **NestJS** – HTTP API
+- **SQLite** + **TypeORM** – persistence
+- **REST** – ReadyOn APIs + in-process **mock HCM** APIs
+- **Jest** + **Supertest** – unit tests (mocked `HcmClient`) and E2E tests (real HTTP + SQLite)
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) (LTS recommended)
 
-## Run locally
-
-Install dependencies:
+## Setup
 
 ```bash
 npm install
 ```
 
-Start the API (development, reloads on file changes):
+## Run
+
+Development (watch mode):
 
 ```bash
 npm run start:dev
 ```
 
-The server listens on **http://localhost:3000** by default. Override the port with the `PORT` environment variable if needed.
+Default URL: **http://localhost:3000**. Override with `PORT`.
 
-Production build and run:
+SQLite database file defaults to **`timeoff.sqlite`** in the project root. Override with:
+
+```bash
+set DATABASE_PATH=./data/my.db
+```
+
+On startup the app sets **`HCM_BASE_URL`** to `http://127.0.0.1:<PORT>/mock-hcm` so the HTTP `HcmClient` calls the mock HCM routes in the same process. Override if needed:
+
+```bash
+set HCM_BASE_URL=http://127.0.0.1:3000/mock-hcm
+```
+
+Production:
 
 ```bash
 npm run build
 npm run start:prod
 ```
+
+## Tests
+
+```bash
+# Unit tests only (fast)
+npm test
+
+# End-to-end only (same app + SQLite + mock HCM HTTP)
+npm run test:e2e
+
+# Coverage: unit + E2E combined (recommended for TRD proof)
+npm run test:cov
+```
+
+Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. Recent combined figures are approximately **84%** statements/lines and **81%** functions; branch coverage is lower (~67%)—see the HTML report under `coverage/` after `npm run test:cov`.
+
+## Main APIs (ReadyOn)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/balances` | Cached balance; `refresh=true` pulls from HCM first |
+| POST | `/balances/sync-from-hcm` | Batch sync from HCM into cache |
+| POST | `/time-off-requests` | Create request (validates with HCM realtime balance) |
+| GET | `/time-off-requests/:requestId` | Get one request |
+| GET | `/employees/:employeeId/time-off-requests` | List requests (`status`, `locationId` optional) |
+| POST | `/time-off-requests/:requestId/approve` | Approve + file usage in HCM (idempotent) |
+| POST | `/time-off-requests/:requestId/reject` | Reject pending request |
+
+## Mock HCM (development / tests)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/mock-hcm/balances` | Realtime balance |
+| POST | `/mock-hcm/time-off-usages` | Deduct / idempotent usage |
+| GET | `/mock-hcm/balances/batch` | Full balance corpus |
+| POST | `/mock-hcm/test/balances` | Seed or update mock balances |
+| POST | `/mock-hcm/test/failure-mode` | Configure failure simulation |
+
+## Design summary
+
+- **HCM is the source of truth** for balances at create and approve time; ReadyOn `readyon_balances` is a cache updated after successful HCM reads or filings and after batch sync.
+- ReadyOn **never reads `mock_hcm_*` tables directly**; it uses the **`HcmClient`** HTTP adapter to call mock HCM routes.
+- Approval uses a stable idempotency key (`<requestId>:approval`) so duplicate approvals do not double-deduct in HCM.
