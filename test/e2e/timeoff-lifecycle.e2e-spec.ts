@@ -3,10 +3,16 @@ import type { INestApplication } from '@nestjs/common';
 import { MockHcmFailureMode } from '../../src/mock-hcm/mock-hcm-failure-mode';
 import { createE2eApp } from './setup-app';
 
+const e2eVerbose = process.env.E2E_VERBOSE === '1';
+
 describe('Time-off lifecycle (e2e)', () => {
   let app: INestApplication;
 
   beforeEach(async () => {
+    if (e2eVerbose) {
+      const testName = expect.getState().currentTestName ?? 'unknown test';
+      console.log(`[e2e:detail] ${testName}`);
+    }
     app = await createE2eApp();
     await request(app.getHttpServer())
       .post('/mock-hcm/test/failure-mode')
