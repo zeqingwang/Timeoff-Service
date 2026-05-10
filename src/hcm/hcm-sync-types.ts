@@ -1,0 +1,10 @@
+export enum HcmSyncType {
+  REALTIME_BALANCE = 'REALTIME_BALANCE',
+  BATCH_BALANCE = 'BATCH_BALANCE',
+  SUBMIT_USAGE = 'SUBMIT_USAGE',
+}
+
+export enum HcmSyncLogStatus {
+  SUCCESS = 'SUCCESS',
+  FAILED = 'FAILED',
+}
