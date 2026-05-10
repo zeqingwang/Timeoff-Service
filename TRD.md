@@ -16,6 +16,18 @@ The service will be implemented using:
 
 This document defines the system design, API contracts, data model, sync strategy, failure handling, alternatives considered, and test strategy.
 
+### 1.1 Original assignment alignment
+
+This TRD satisfies the take-home engineering specification alongside an implemented repository. Deliverables map as follows:
+
+| Deliverable | Location |
+| ----------- | -------- |
+| Technical Requirement Document (TRD) | This document (`TRD.md` at repository root) |
+| Implementable codebase | Git repository (NestJS + SQLite, as specified) |
+| Test suite and coverage proof | `test/unit`, `test/e2e`, `npm run test:cov`, README |
+
+The original problem stresses **sync difficulty** between ReadyOn and HCM when balances change independently (e.g. work anniversary, plan year reset, HR adjustments). The design addresses **realtime** balance read and usage filing, a **batch** corpus sync into ReadyOn’s cache, **defensive** validation when HCM responses are imperfect, and a **stateful mock HCM** with realistic failure modes for automated tests.
+
 ---
 
 ## 2. Problem Statement
@@ -40,14 +52,15 @@ The Time-Off Microservice must:
 
 1. Allow employees to view their time-off balances.
 2. Allow employees to create time-off requests.
-3. Allow managers to approve or reject time-off requests.
-4. Validate time-off requests against HCM balances.
-5. Keep a local cache of HCM balances for fast reads and UI responsiveness.
-6. Support realtime HCM balance checks.
-7. Support batch balance synchronization from HCM.
-8. Defensively handle stale data, invalid dimension combinations, insufficient balances, HCM errors, and duplicate actions.
-9. Provide a mock HCM service for test and development purposes.
-10. Include a rigorous automated test suite that protects against future regressions.
+3. Allow employees to cancel their own pending requests (terminal `CANCELLED` status).
+4. Allow managers to approve or reject time-off requests.
+5. Validate time-off requests against HCM balances.
+6. Keep a local cache of HCM balances for fast reads and UI responsiveness.
+7. Support realtime HCM balance checks.
+8. Support batch balance synchronization from HCM.
+9. Defensively handle stale data, invalid dimension combinations, insufficient balances, HCM errors, and duplicate actions.
+10. Provide a mock HCM service for test and development purposes.
+11. Include a rigorous automated test suite that protects against future regressions.
 
 ---
 
@@ -70,14 +83,14 @@ The following are outside the scope of this take-home implementation:
 ## 5. Assumptions
 
 1. Balances are tracked per employee and per location.
-2. All the blance have the same type, to simplify the problem.  
+2. All balances represent the same time-off type (single bucket), to simplify the problem.
 3. HCM exposes a realtime API for reading balances and filing time-off usage.
 4. HCM exposes a batch endpoint that returns the full corpus of time-off balances.
 5. HCM usually returns errors for invalid dimensions or insufficient balance, but ReadyOn must still perform defensive validation.
 6. ReadyOn’s local balance table is a cache, not the source of truth.
 7. A time-off request should not become finally approved unless HCM accepts the filing request.
 8. SQLite is acceptable for this take-home, but the design should be portable to a production relational database such as PostgreSQL.
-9. Assume all the employee do not change overtime, not exist the condition that exit when employee submit the request, but that employee is removed later when manager view&approved the request
+9. **Stable employment context for the take-home:** employees do not terminate or lose eligibility mid-flow between submit and manager action. In other words, we do not model “employee submitted while active but was terminated before approval”—approvals still operate on a request in `PENDING_APPROVAL` against current HCM dimensions and balance.
 
 ---
 
@@ -188,6 +201,8 @@ A time-off request may have the following statuses:
 
 For this take-home, `APPROVED` means the request was both manager-approved and successfully filed into HCM.
 
+**Final statuses:** `APPROVED`, `REJECTED`, `CANCELLED`, and `FAILED_HCM_SUBMISSION` are terminal. No transition moves **into** `CANCELLED` from `APPROVED` or `REJECTED` (or any non-pending state). Only `PENDING_APPROVAL` may become `CANCELLED`, via the employee cancel API (see §9.5 and §11.1).
+
 ### 9.2 Create Request Flow
 
 ```text
@@ -222,6 +237,15 @@ For this take-home, `APPROVED` means the request was both manager-approved and s
 3. Service updates status to REJECTED.
 4. No HCM balance deduction occurs.
 5. Rejection reason may be stored.
+```
+
+### 9.5 Employee Cancellation Flow
+
+```text
+1. Employee calls cancel with their employeeId (must match the request owner).
+2. Service verifies the request exists and is PENDING_APPROVAL.
+3. Service sets status to CANCELLED (terminal). No HCM usage is filed; balances are unchanged.
+4. Approved, rejected, failed-HCM, or already-cancelled requests cannot be cancelled.
 ```
 
 ---
@@ -528,6 +552,35 @@ Success response:
   "status": "REJECTED"
 }
 ```
+
+---
+
+### POST /time-off-requests/\:requestId/cancel
+
+Cancels a **pending** request by the owning employee. **`CANCELLED` is a final status** alongside `APPROVED`, `REJECTED`, and `FAILED_HCM_SUBMISSION`; it cannot be reached from `APPROVED` or `REJECTED`.
+
+Request body:
+
+```json
+{
+  "employeeId": "E001"
+}
+```
+
+Success response:
+
+```json
+{
+  "requestId": "REQ_001",
+  "status": "CANCELLED"
+}
+```
+
+Failure examples:
+
+- `403 EMPLOYEE_MISMATCH` — `employeeId` does not own this request
+- `404 REQUEST_NOT_FOUND`
+- `409 REQUEST_NOT_CANCELLABLE` — request is not `PENDING_APPROVAL`
 
 ---
 
@@ -928,11 +981,17 @@ Selected.
 
 A stateful mock HCM provides realistic integration behavior and enables strong e2e tests. ReadyOn must call the mock HCM through an API boundary rather than directly reading mock HCM tables.
 
+### 17.6 REST versus GraphQL
+
+**REST** is selected for ReadyOn and mock HCM HTTP APIs. It matches NestJS conventions, keeps contracts easy to document and test with Jest/Supertest, and is sufficient for resource-oriented balance and time-off operations. **GraphQL** was considered as an alternative for flexible reads but was deferred to reduce scope and avoid an additional schema and resolver layer in the take-home; a future BFF could expose GraphQL while this service remains REST.
+
 ---
 
 ## 18. Testing Strategy
 
 The test suite is a core deliverable. Because this project may be developed using AI-assisted or agentic development, tests must be precise enough to catch regressions and incorrect generated code.
+
+Some assignment wording suggests prioritizing a rigorous specification over hand-written code; in practice, **quality comes from a precise TRD plus automated tests that encode acceptance behavior.** Implementation should follow the TRD and tests so that agent-assisted changes remain verifiable.
 
 The project will include:
 
@@ -971,7 +1030,16 @@ Unit tests focus on service-level business logic with mocked `HcmClient`.
 | HCM timeout before filing                             | Request remains unapproved                     |
 | HCM fails during filing                               | Request becomes or remains failed/unapproved   |
 
-### 19.3 Balance Sync Unit Tests
+### 19.3 Cancellation Unit Tests
+
+| Test Case                                    | Expected Result                                |
+| -------------------------------------------- | ---------------------------------------------- |
+| Cancel pending request with matching owner   | Status becomes `CANCELLED` (terminal)          |
+| Cancel with non-matching `employeeId`        | `403` / `EMPLOYEE_MISMATCH`                    |
+| Cancel when approved, rejected, or cancelled | `409` / `REQUEST_NOT_CANCELLABLE`              |
+| Cancel missing request                       | `404` / `REQUEST_NOT_FOUND`                    |
+
+### 19.4 Balance Sync Unit Tests
 
 | Test Case                        | Expected Result                                    |
 | -------------------------------- | -------------------------------------------------- |
@@ -1016,6 +1084,10 @@ E2E tests use real HTTP endpoints, SQLite, and mock HCM state.
 | Manager approves valid request                                          | Request pending, HCM balance = 10 | Request approved, HCM balance = 8, ReadyOn cache = 8 |
 | Manager approves after HCM balance changed lower                        | Request = 2, HCM changed to 1     | Approval rejected                                    |
 | Manager rejects request                                                 | Pending request                   | Request becomes rejected, HCM unchanged              |
+| Employee cancels pending request                                      | Pending, matching `employeeId`    | `CANCELLED`; HCM balance unchanged                   |
+| Cancel with wrong `employeeId`                                          | Pending                         | `403`                                                |
+| Approve after cancel                                                    | Cancelled request               | `409` / not approvable                               |
+| Cancel after approve                                                    | Approved request                | `409` / not cancellable                              |
 
 ### 20.4 Duplicate and Race-Like E2E Tests
 
@@ -1064,8 +1136,7 @@ The most important coverage is not raw percentage. The test suite must prove cor
 
 ```text
 readyon-timeoff-service/
-  docs/
-    TRD.md
+  TRD.md
   src/
     app.module.ts
     common/
@@ -1083,7 +1154,8 @@ readyon-timeoff-service/
       dto/
     hcm/
       hcm-client.interface.ts
-      hcm-http-client.ts
+      http-hcm-client.service.ts
+      hcm-sync-types.ts
       hcm-sync-log.entity.ts
     mock-hcm/
       mock-hcm-balance.entity.ts
@@ -1115,7 +1187,7 @@ Recommended development order:
 5. Implement HCM client abstraction.
 6. Implement balance sync service.
 7. Implement time-off request creation.
-8. Implement manager approval and rejection.
+8. Implement manager approval, rejection, and employee cancellation.
 9. Add unit tests.
 10. Add e2e tests.
 11. Add failure mode simulation.
@@ -1141,6 +1213,7 @@ The implementation is complete when:
 12. Unit and e2e tests pass.
 13. Coverage report is generated.
 14. README explains how to run the service, tests, and coverage.
+15. Employee can cancel their own `PENDING_APPROVAL` request (`CANCELLED` is terminal); mismatched `employeeId` is rejected with `403`; non-pending cancellation attempts receive `409`.
 
 ---
 

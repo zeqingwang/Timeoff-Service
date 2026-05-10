@@ -74,6 +74,7 @@ Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.sp
 | GET | `/employees/:employeeId/time-off-requests` | List requests (`status`, `locationId` optional) |
 | POST | `/time-off-requests/:requestId/approve` | Approve + file usage in HCM (idempotent) |
 | POST | `/time-off-requests/:requestId/reject` | Reject pending request |
+| POST | `/time-off-requests/:requestId/cancel` | Employee cancels own pending request (`employeeId` body) |
 
 ## Mock HCM (development / tests)
 

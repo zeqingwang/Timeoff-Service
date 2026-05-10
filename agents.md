@@ -215,6 +215,7 @@ GET  /time-off-requests/:requestId
 GET  /employees/:employeeId/time-off-requests
 POST /time-off-requests/:requestId/approve
 POST /time-off-requests/:requestId/reject
+POST /time-off-requests/:requestId/cancel
 ```
 
 Core Mock HCM APIs:

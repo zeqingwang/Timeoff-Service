@@ -8,8 +8,9 @@ import { ReadyOnBalance } from '../../src/balances/balance.entity';
 import { HCM_CLIENT } from '../../src/hcm/hcm-client.interface';
 import type { HcmClient } from '../../src/hcm/hcm-client.interface';
 import { BalancesService } from '../../src/balances/balances.service';
-import { HttpException } from '@nestjs/common';
+import { HttpException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { HcmSyncLogStatus, HcmSyncType } from '../../src/hcm/hcm-sync-types';
+import { ErrorCodes } from '../../src/common/error-codes';
 
 describe('TimeOffService', () => {
   let service: TimeOffService;
@@ -510,6 +511,98 @@ describe('TimeOffService', () => {
       status: TimeOffRequestStatus.APPROVED,
     } as TimeOffRequest);
     await expect(service.reject('REQ_1', 'M1')).rejects.toThrow(HttpException);
+  });
+
+  it('cancel sets CANCELLED when pending and employee matches', async () => {
+    const row = {
+      id: 1,
+      requestId: 'REQ_X',
+      employeeId: 'E1',
+      locationId: 'L1',
+      requestedDays: 2,
+      status: TimeOffRequestStatus.PENDING_APPROVAL,
+      managerId: null,
+      rejectionReason: null,
+      hcmTransactionId: null,
+      idempotencyKey: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as TimeOffRequest;
+    requestRepo.findOne.mockResolvedValue(row);
+    requestRepo.save.mockImplementation(async (e) => e as TimeOffRequest);
+
+    const out = await service.cancel('REQ_X', 'E1');
+    expect(out).toEqual({
+      requestId: 'REQ_X',
+      status: TimeOffRequestStatus.CANCELLED,
+    });
+    expect(requestRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: TimeOffRequestStatus.CANCELLED }),
+    );
+  });
+
+  it('cancel throws Forbidden when employeeId does not match', async () => {
+    requestRepo.findOne.mockResolvedValue({
+      requestId: 'REQ_X',
+      employeeId: 'E1',
+      status: TimeOffRequestStatus.PENDING_APPROVAL,
+    } as TimeOffRequest);
+
+    try {
+      await service.cancel('REQ_X', 'E999');
+      throw new Error('expected throw');
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(ForbiddenException);
+      const body = (e as ForbiddenException).getResponse() as {
+        errorCode: string;
+      };
+      expect(body.errorCode).toBe(ErrorCodes.EMPLOYEE_MISMATCH);
+    }
+  });
+
+  it('cancel throws REQUEST_NOT_CANCELLABLE when already approved', async () => {
+    requestRepo.findOne.mockResolvedValue({
+      employeeId: 'E1',
+      status: TimeOffRequestStatus.APPROVED,
+    } as TimeOffRequest);
+
+    try {
+      await service.cancel('REQ_X', 'E1');
+      throw new Error('expected throw');
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(ConflictException);
+      const body = (e as ConflictException).getResponse() as {
+        errorCode: string;
+      };
+      expect(body.errorCode).toBe(ErrorCodes.REQUEST_NOT_CANCELLABLE);
+    }
+  });
+
+  it('cancel throws REQUEST_NOT_CANCELLABLE when rejected', async () => {
+    requestRepo.findOne.mockResolvedValue({
+      employeeId: 'E1',
+      status: TimeOffRequestStatus.REJECTED,
+    } as TimeOffRequest);
+
+    await expect(service.cancel('REQ_X', 'E1')).rejects.toThrow(
+      ConflictException,
+    );
+  });
+
+  it('cancel throws REQUEST_NOT_CANCELLABLE when already cancelled', async () => {
+    requestRepo.findOne.mockResolvedValue({
+      employeeId: 'E1',
+      status: TimeOffRequestStatus.CANCELLED,
+    } as TimeOffRequest);
+
+    await expect(service.cancel('REQ_X', 'E1')).rejects.toThrow(
+      ConflictException,
+    );
+  });
+
+  it('cancel throws when request not found', async () => {
+    requestRepo.findOne.mockResolvedValue(null);
+    await expect(service.cancel('missing', 'E1')).rejects.toThrow(HttpException);
   });
 
   it('approve idempotent returns remainingDays 0 when cache missing', async () => {

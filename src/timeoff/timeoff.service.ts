@@ -10,12 +10,14 @@ import { BalancesService } from '../balances/balances.service';
 import { ReadyOnBalance } from '../balances/balance.entity';
 import { approvalIdempotencyKey } from '../common/idempotency';
 import {
+  employeeMismatch,
   hcmInvalidResponse,
   hcmUnavailable,
   insufficientBalance,
   invalidDimension,
   invalidRequestDays,
   requestNotApprovable,
+  requestNotCancellable,
   requestNotFound,
 } from '../common/errors';
 import type { CreateTimeOffRequestDto } from './dto/timeoff.dto';
@@ -298,6 +300,31 @@ export class TimeOffService {
     return {
       requestId,
       status: TimeOffRequestStatus.REJECTED,
+    };
+  }
+
+  /**
+   * Employee cancels a pending request. `CANCELLED` is terminal; only
+   * `PENDING_APPROVAL` is allowed.
+   */
+  async cancel(requestId: string, employeeId: string) {
+    const existing = await this.requestRepo.findOne({ where: { requestId } });
+    if (!existing) {
+      throw requestNotFound();
+    }
+    if (existing.employeeId !== employeeId) {
+      throw employeeMismatch();
+    }
+    if (existing.status !== TimeOffRequestStatus.PENDING_APPROVAL) {
+      throw requestNotCancellable(
+        'Only pending requests can be cancelled; this status is final',
+      );
+    }
+    existing.status = TimeOffRequestStatus.CANCELLED;
+    await this.requestRepo.save(existing);
+    return {
+      requestId,
+      status: TimeOffRequestStatus.CANCELLED,
     };
   }
 

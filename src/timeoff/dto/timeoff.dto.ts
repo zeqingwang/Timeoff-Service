@@ -27,3 +27,9 @@ export class RejectTimeOffDto {
   @IsString()
   reason?: string;
 }
+
+/** Employee must match the request owner (stub auth for take-home). */
+export class CancelTimeOffDto {
+  @IsString()
+  employeeId: string;
+}

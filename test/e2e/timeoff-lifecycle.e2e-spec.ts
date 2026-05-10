@@ -349,4 +349,95 @@ describe('Time-off lifecycle (e2e)', () => {
       .send({ mode: MockHcmFailureMode.NONE })
       .expect(200);
   });
+
+  it('employee cancels pending request with matching employeeId', async () => {
+    await seedHcm('E120', 'L120', 10);
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E120',
+        locationId: 'L120',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const cancelled = await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/cancel`)
+      .send({ employeeId: 'E120' })
+      .expect(200);
+
+    expect(cancelled.body.status).toBe('CANCELLED');
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E120', locationId: 'L120' })
+      .expect(200);
+
+    expect(hcmBal.body.availableDays).toBe(10);
+  });
+
+  it('cancel returns 403 when employeeId does not own the request', async () => {
+    await seedHcm('E121', 'L121', 10);
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E121',
+        locationId: 'L121',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/cancel`)
+      .send({ employeeId: 'E_OTHER' })
+      .expect(403);
+  });
+
+  it('cannot approve after cancel', async () => {
+    await seedHcm('E122', 'L122', 10);
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E122',
+        locationId: 'L122',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/cancel`)
+      .send({ employeeId: 'E122' })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(409);
+  });
+
+  it('cannot cancel after approve', async () => {
+    await seedHcm('E123', 'L123', 10);
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E123',
+        locationId: 'L123',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/cancel`)
+      .send({ employeeId: 'E123' })
+      .expect(409);
+  });
 });

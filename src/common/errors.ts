@@ -1,6 +1,7 @@
-import {
+﻿import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   HttpStatus,
   NotFoundException,
@@ -64,6 +65,22 @@ export function requestNotFound(): NotFoundException {
 export function requestNotApprovable(message: string): ConflictException {
   return new ConflictException({
     errorCode: ErrorCodes.REQUEST_NOT_APPROVABLE,
+    message,
+  });
+}
+
+export function requestNotCancellable(message: string): ConflictException {
+  return new ConflictException({
+    errorCode: ErrorCodes.REQUEST_NOT_CANCELLABLE,
+    message,
+  });
+}
+
+export function employeeMismatch(
+  message = 'Request does not belong to this employee',
+): ForbiddenException {
+  return new ForbiddenException({
+    errorCode: ErrorCodes.EMPLOYEE_MISMATCH,
     message,
   });
 }

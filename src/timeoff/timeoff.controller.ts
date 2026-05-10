@@ -10,6 +10,7 @@ import {
 import { TimeOffService } from './timeoff.service';
 import {
   ApproveTimeOffDto,
+  CancelTimeOffDto,
   CreateTimeOffRequestDto,
   RejectTimeOffDto,
 } from './dto/timeoff.dto';
@@ -45,6 +46,15 @@ export class TimeOffController {
     @Body() dto: RejectTimeOffDto,
   ) {
     return this.timeOffService.reject(requestId, dto.managerId, dto.reason);
+  }
+
+  @Post(':requestId/cancel')
+  @HttpCode(200)
+  async cancel(
+    @Param('requestId') requestId: string,
+    @Body() dto: CancelTimeOffDto,
+  ) {
+    return this.timeOffService.cancel(requestId, dto.employeeId);
   }
 }
 
