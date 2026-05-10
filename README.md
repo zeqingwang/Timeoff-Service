@@ -61,7 +61,7 @@ npm run test:e2e
 npm run test:cov
 ```
 
-Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. Recent combined figures are approximately **84%** statements/lines and **81%** functions; branch coverage is lower (~67%)—see the HTML report under `coverage/` after `npm run test:cov`.
+Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **96%** lines, **96%** statements, **93%** functions, and **84%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
 
 ## Main APIs (ReadyOn)
 

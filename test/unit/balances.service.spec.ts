@@ -7,6 +7,7 @@ import { HcmSyncLog } from '../../src/hcm/hcm-sync-log.entity';
 import { HCM_CLIENT } from '../../src/hcm/hcm-client.interface';
 import type { HcmClient } from '../../src/hcm/hcm-client.interface';
 import { HcmSyncType } from '../../src/hcm/hcm-sync-types';
+import { HttpException, UnprocessableEntityException } from '@nestjs/common';
 
 describe('BalancesService', () => {
   let service: BalancesService;
@@ -123,5 +124,75 @@ describe('BalancesService', () => {
 
     await expect(service.syncFromHcm()).rejects.toBeDefined();
     expect(syncRepo.save).toHaveBeenCalled();
+  });
+
+  it('getBalances throws invalidDimension when HCM returns invalid dimension', async () => {
+    balanceRepo.findOne.mockResolvedValue(null);
+    hcm.getBalance.mockResolvedValue({
+      type: 'invalid_dimension',
+      message: 'bad combo',
+    });
+
+    await expect(service.getBalances('E1', 'L1', false)).rejects.toThrow(
+      UnprocessableEntityException,
+    );
+    expect(syncRepo.save).toHaveBeenCalled();
+  });
+
+  it('getBalances throws hcmInvalidResponse when transport is INVALID_RESPONSE', async () => {
+    balanceRepo.findOne.mockResolvedValue(null);
+    hcm.getBalance.mockResolvedValue({
+      type: 'transport',
+      code: 'INVALID_RESPONSE',
+    });
+
+    await expect(service.getBalances('E1', 'L1', true)).rejects.toThrow(
+      HttpException,
+    );
+  });
+
+  it('syncFromHcm throws hcmInvalidResponse when batch transport INVALID_RESPONSE', async () => {
+    hcm.getBatchBalances.mockResolvedValue({
+      type: 'transport',
+      code: 'INVALID_RESPONSE',
+    });
+
+    await expect(service.syncFromHcm()).rejects.toThrow(HttpException);
+  });
+
+  it('syncFromHcm increments recordsFailed when upsert throws', async () => {
+    hcm.getBatchBalances.mockResolvedValue({
+      type: 'ok',
+      balances: [
+        {
+          employeeId: 'E1',
+          locationId: 'L1',
+          availableDays: 1,
+          version: 1,
+        },
+      ],
+    });
+    balanceRepo.findOne.mockResolvedValue(null);
+    balanceRepo.save.mockRejectedValueOnce(new Error('db'));
+
+    const res = await service.syncFromHcm();
+    expect(res.recordsFailed).toBe(1);
+    expect(res.recordsUpserted).toBe(0);
+  });
+
+  it('fetches from HCM when no cache and refresh is false', async () => {
+    balanceRepo.findOne.mockResolvedValue(null);
+    hcm.getBalance.mockResolvedValue({
+      type: 'balance',
+      employeeId: 'E1',
+      locationId: 'L1',
+      availableDays: 7,
+      version: 1,
+    });
+    balanceRepo.save.mockImplementation(async (x) => x as ReadyOnBalance);
+
+    const res = await service.getBalances('E1', 'L1', false);
+    expect(res.availableDays).toBe(7);
+    expect(hcm.getBalance).toHaveBeenCalled();
   });
 });
