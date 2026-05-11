@@ -1,6 +1,7 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { MockHcmFailureMode } from '../../src/mock-hcm/mock-hcm-failure-mode';
+import { ErrorCodes } from '../../src/common/error-codes';
 import { createE2eApp } from './setup-app';
 
 describe('Balance sync (e2e)', () => {
@@ -170,5 +171,88 @@ describe('Balance sync (e2e)', () => {
       .post('/mock-hcm/test/failure-mode')
       .send({ mode: MockHcmFailureMode.NONE })
       .expect(200);
+  });
+
+  it('batch sync upserts multiple HCM balances; GET balances matches each', async () => {
+    await request(app.getHttpServer())
+      .post('/mock-hcm/test/balances')
+      .send({
+        employeeId: 'E_MULTI_A',
+        locationId: 'L_MULTI_A',
+        availableDays: 4.25,
+        isValid: true,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/mock-hcm/test/balances')
+      .send({
+        employeeId: 'E_MULTI_B',
+        locationId: 'L_MULTI_B',
+        availableDays: 7.5,
+        isValid: true,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/balances/sync-from-hcm')
+      .expect(200);
+
+    const a = await request(app.getHttpServer())
+      .get('/balances')
+      .query({
+        employeeId: 'E_MULTI_A',
+        locationId: 'L_MULTI_A',
+        refresh: false,
+      })
+      .expect(200);
+
+    const b = await request(app.getHttpServer())
+      .get('/balances')
+      .query({
+        employeeId: 'E_MULTI_B',
+        locationId: 'L_MULTI_B',
+        refresh: 'true',
+      })
+      .expect(200);
+
+    expect(a.body.availableDays).toBeCloseTo(4.25, 4);
+    expect(b.body.availableDays).toBeCloseTo(7.5, 4);
+    expect(a.body.source).toBe('HCM_CACHE');
+    expect(b.body.source).toBe('HCM_CACHE');
+  });
+
+  it('batch sync returns 502 when mock HCM batch response is malformed', async () => {
+    await request(app.getHttpServer())
+      .post('/mock-hcm/test/failure-mode')
+      .send({ mode: MockHcmFailureMode.MALFORMED_RESPONSE })
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .post('/balances/sync-from-hcm')
+      .expect(502);
+
+    expect(res.body.errorCode).toBe(ErrorCodes.HCM_INVALID_RESPONSE);
+
+    await request(app.getHttpServer())
+      .post('/mock-hcm/test/failure-mode')
+      .send({ mode: MockHcmFailureMode.NONE })
+      .expect(200);
+  });
+
+  it('GET /balances returns 400 when required query params are missing', async () => {
+    const missingEmployee = await request(app.getHttpServer())
+      .get('/balances')
+      .query({ locationId: 'L1' })
+      .expect(400);
+
+    expect(missingEmployee.body.statusCode).toBe(400);
+
+    const missingLocation = await request(app.getHttpServer())
+      .get('/balances')
+      .query({ employeeId: 'E1' })
+      .expect(400);
+
+    expect(missingLocation.body.statusCode).toBe(400);
   });
 });
