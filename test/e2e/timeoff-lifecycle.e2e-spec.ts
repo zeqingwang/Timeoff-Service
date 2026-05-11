@@ -1,6 +1,7 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { MockHcmFailureMode } from '../../src/mock-hcm/mock-hcm-failure-mode';
+import { ErrorCodes } from '../../src/common/error-codes';
 import { createE2eApp } from './setup-app';
 
 const e2eVerbose = process.env.E2E_VERBOSE === '1';
@@ -78,11 +79,11 @@ describe('Time-off lifecycle (e2e)', () => {
           `[e2e:detail] ${detailTestName}`,
           ...detailLines.map((line) => `[e2e:detail] ${line}`),
         ].join('\n');
-        // eslint-disable-next-line no-console -- E2E verbose trace only
+
         console.log(block);
       } else {
         // Every other test: title only (no buffered detail lines).
-        // eslint-disable-next-line no-console -- E2E verbose trace only
+
         console.log(`[e2e:detail] ${detailTestName}`);
       }
     }
@@ -547,6 +548,300 @@ describe('Time-off lifecycle (e2e)', () => {
       .expect(409);
   });
 
+  it('create succeeds after transient HCM TIMEOUT then retry succeeds', async () => {
+    const prevT = process.env.HCM_TIMEOUT_MS;
+    process.env.HCM_TIMEOUT_MS = '1500';
+    try {
+      await seedHcm('E_TIMEOUT_CREATE', 'L_TIMEOUT_CREATE', 10);
+
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.TIMEOUT })
+        .expect(200);
+
+      const fail = await request(app.getHttpServer())
+        .post('/time-off-requests')
+        .send({
+          employeeId: 'E_TIMEOUT_CREATE',
+          locationId: 'L_TIMEOUT_CREATE',
+          requestedDays: 1,
+        })
+        .expect(503);
+      expect(fail.body.errorCode).toBe(ErrorCodes.HCM_UNAVAILABLE);
+
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.NONE })
+        .expect(200);
+
+      const ok = await request(app.getHttpServer())
+        .post('/time-off-requests')
+        .send({
+          employeeId: 'E_TIMEOUT_CREATE',
+          locationId: 'L_TIMEOUT_CREATE',
+          requestedDays: 1,
+        })
+        .expect(200);
+      expect(ok.body.status).toBe('PENDING_APPROVAL');
+    } finally {
+      process.env.HCM_TIMEOUT_MS = prevT;
+    }
+  }, 25_000);
+
+  it('approve succeeds after transient HCM TIMEOUT on first attempt', async () => {
+    const prevT = process.env.HCM_TIMEOUT_MS;
+    process.env.HCM_TIMEOUT_MS = '1500';
+    try {
+      await seedHcm('E_TIMEOUT_APPR', 'L_TIMEOUT_APPR', 10);
+      const created = await request(app.getHttpServer())
+        .post('/time-off-requests')
+        .send({
+          employeeId: 'E_TIMEOUT_APPR',
+          locationId: 'L_TIMEOUT_APPR',
+          requestedDays: 2,
+        })
+        .expect(200);
+
+      const requestId = created.body.requestId as string;
+
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.TIMEOUT })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M1' })
+        .expect(503);
+
+      const pending = await request(app.getHttpServer())
+        .get(`/time-off-requests/${requestId}`)
+        .expect(200);
+      expect(pending.body.status).toBe('PENDING_APPROVAL');
+
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.NONE })
+        .expect(200);
+
+      const approved = await request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M1' })
+        .expect(200);
+      expect(approved.body.status).toBe('APPROVED');
+    } finally {
+      process.env.HCM_TIMEOUT_MS = prevT;
+    }
+  }, 35_000);
+
+  it('GET /employees/:id/time-off-requests lists and filters by status and locationId', async () => {
+    await seedHcm('E_LIST', 'L_LIST_A', 10);
+    await seedHcm('E_LIST', 'L_LIST_B', 10);
+
+    const a = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E_LIST',
+        locationId: 'L_LIST_A',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    const b = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E_LIST',
+        locationId: 'L_LIST_B',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${a.body.requestId}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(200);
+
+    const all = await request(app.getHttpServer())
+      .get('/employees/E_LIST/time-off-requests')
+      .expect(200);
+
+    expect(Array.isArray(all.body)).toBe(true);
+    expect(all.body.length).toBeGreaterThanOrEqual(2);
+
+    const pendingOnly = await request(app.getHttpServer())
+      .get('/employees/E_LIST/time-off-requests')
+      .query({ status: 'PENDING_APPROVAL' })
+      .expect(200);
+
+    const pendingRows = pendingOnly.body as Array<{
+      status: string;
+      requestId: string;
+    }>;
+    expect(pendingRows.every((r) => r.status === 'PENDING_APPROVAL')).toBe(
+      true,
+    );
+    expect(pendingRows.some((r) => r.requestId === b.body.requestId)).toBe(
+      true,
+    );
+
+    const locA = await request(app.getHttpServer())
+      .get('/employees/E_LIST/time-off-requests')
+      .query({ locationId: 'L_LIST_A' })
+      .expect(200);
+
+    const locRows = locA.body as Array<{ locationId: string }>;
+    expect(locRows.every((r) => r.locationId === 'L_LIST_A')).toBe(true);
+  });
+
+  it('GET /employees/:id/time-off-requests returns empty array for employee with no requests', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/employees/E_NO_REQUESTS/time-off-requests')
+      .expect(200);
+
+    expect(res.body).toEqual([]);
+  });
+
+  it('create returns 400 when body fails validation', async () => {
+    const missing = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        locationId: 'L400',
+        requestedDays: 1,
+      })
+      .expect(400);
+    expect(missing.body.statusCode).toBe(400);
+
+    const zeroDays = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E400',
+        locationId: 'L400',
+        requestedDays: 0,
+      })
+      .expect(400);
+    expect(zeroDays.body.statusCode).toBe(400);
+  });
+
+  it('approve and reject return 400 when managerId is missing', async () => {
+    await seedHcm('E400MGR', 'L400MGR', 10);
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E400MGR',
+        locationId: 'L400MGR',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    const id = created.body.requestId as string;
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${id}/approve`)
+      .send({})
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${id}/reject`)
+      .send({})
+      .expect(400);
+  });
+
+  it('GET and mutations return 404 for unknown requestId', async () => {
+    await request(app.getHttpServer())
+      .get('/time-off-requests/REQ_does_not_exist_zzzz')
+      .expect(404);
+
+    const nf = await request(app.getHttpServer())
+      .post('/time-off-requests/REQ_does_not_exist_zzzz/approve')
+      .send({ managerId: 'M1' })
+      .expect(404);
+    expect(nf.body.errorCode).toBe(ErrorCodes.REQUEST_NOT_FOUND);
+
+    await request(app.getHttpServer())
+      .post('/time-off-requests/REQ_does_not_exist_zzzz/reject')
+      .send({ managerId: 'M1' })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post('/time-off-requests/REQ_does_not_exist_zzzz/cancel')
+      .send({ employeeId: 'E1' })
+      .expect(404);
+  });
+
+  it('reject after approve and approve after reject return 409', async () => {
+    await seedHcm('E409FLOW', 'L409FLOW', 10);
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E409FLOW',
+        locationId: 'L409FLOW',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    const id = created.body.requestId as string;
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${id}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(200);
+
+    const rejAfter = await request(app.getHttpServer())
+      .post(`/time-off-requests/${id}/reject`)
+      .send({ managerId: 'M2', reason: 'late' })
+      .expect(409);
+    expect(rejAfter.body.errorCode).toBe(ErrorCodes.REQUEST_NOT_APPROVABLE);
+
+    const created2 = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E409FLOW',
+        locationId: 'L409FLOW',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    const id2 = created2.body.requestId as string;
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${id2}/reject`)
+      .send({ managerId: 'M1', reason: 'no' })
+      .expect(200);
+
+    const apprAfter = await request(app.getHttpServer())
+      .post(`/time-off-requests/${id2}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(409);
+    expect(apprAfter.body.errorCode).toBe(ErrorCodes.REQUEST_NOT_APPROVABLE);
+  });
+
+  it('cancel after reject returns 409', async () => {
+    await seedHcm('E409CAN', 'L409CAN', 10);
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E409CAN',
+        locationId: 'L409CAN',
+        requestedDays: 1,
+      })
+      .expect(200);
+
+    const id = created.body.requestId as string;
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${id}/reject`)
+      .send({ managerId: 'M1', reason: 'x' })
+      .expect(200);
+
+    const can = await request(app.getHttpServer())
+      .post(`/time-off-requests/${id}/cancel`)
+      .send({ employeeId: 'E409CAN' })
+      .expect(409);
+    expect(can.body.errorCode).toBe(ErrorCodes.REQUEST_NOT_CANCELLABLE);
+  });
+
   it('concurrent approvals for 2 request with same employee-location serialize via approval lock, the blance can fulfill both requests both requests', async () => {
     await seedHcm('E200', 'L200', 10);
 
@@ -877,7 +1172,9 @@ describe('Time-off lifecycle (e2e)', () => {
       'Expect one HTTP 200 and one HTTP 409 (loser)',
     ]);
 
-    const statuses = [approveRes.status, rejectRes.status].sort((a, b) => a - b);
+    const statuses = [approveRes.status, rejectRes.status].sort(
+      (a, b) => a - b,
+    );
     expect(statuses).toEqual([200, 409]);
 
     const get = await request(app.getHttpServer())

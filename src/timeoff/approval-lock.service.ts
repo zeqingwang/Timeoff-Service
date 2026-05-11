@@ -17,7 +17,14 @@ function sleep(ms: number): Promise<void> {
 
 function isUniqueConstraintError(err: unknown): boolean {
   if (err instanceof QueryFailedError) {
-    const msg = String(err.message + (err.driverError?.message ?? ''));
+    const driverMsg =
+      err.driverError &&
+      typeof err.driverError === 'object' &&
+      'message' in err.driverError &&
+      typeof (err.driverError as { message?: unknown }).message === 'string'
+        ? String((err.driverError as { message: string }).message)
+        : '';
+    const msg = String(err.message + driverMsg);
     return (
       msg.includes('SQLITE_CONSTRAINT') ||
       msg.includes('UNIQUE constraint') ||

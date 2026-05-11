@@ -91,7 +91,8 @@ describe('ApprovalLockService', () => {
 
 function uniqueConstraintQueryFailed(): QueryFailedError {
   const driverError = {
-    message: 'SQLITE_CONSTRAINT: UNIQUE constraint failed: approval_locks.lock_key',
+    message:
+      'SQLITE_CONSTRAINT: UNIQUE constraint failed: approval_locks.lock_key',
   };
   return new QueryFailedError('INSERT', [], driverError as Error);
 }
@@ -108,7 +109,7 @@ describe('ApprovalLockService (mocked repository)', () => {
     save = jest.fn();
     findOne = jest.fn();
     deleteFn = jest.fn();
-    create = jest.fn((x) => x);
+    create = jest.fn((x: unknown) => x as ApprovalLock);
     qbExecute = jest.fn().mockResolvedValue(undefined);
     const qb = {
       delete: jest.fn().mockReturnThis(),
