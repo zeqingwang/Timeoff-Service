@@ -71,6 +71,8 @@ npm run test:e2e:detail
 # Coverage: unit + E2E combined (recommended for TRD proof)
 npm run test:cov
 ```
+<img width="1305" height="903" alt="image" src="https://github.com/user-attachments/assets/56b87a05-d20b-4a7d-a218-b1828993e526" />
+
 
 Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **97.4%** lines, **97%** statements, **94.6%** functions, and **84.5%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
 
