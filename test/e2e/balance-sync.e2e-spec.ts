@@ -41,6 +41,47 @@ describe('Balance sync (e2e)', () => {
     expect(cached.body.source).toBe('HCM_CACHE');
   });
 
+  it('batch sync and GET /balances preserve decimal availableDays', async () => {
+    const availableDays = 12.375;
+
+    await request(app.getHttpServer())
+      .post('/mock-hcm/test/balances')
+      .send({
+        employeeId: 'E-DEC-BAL',
+        locationId: 'L-DEC-BAL',
+        availableDays,
+        isValid: true,
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/balances/sync-from-hcm')
+      .expect(200);
+
+    const cached = await request(app.getHttpServer())
+      .get('/balances')
+      .query({
+        employeeId: 'E-DEC-BAL',
+        locationId: 'L-DEC-BAL',
+        refresh: false,
+      })
+      .expect(200);
+
+    expect(cached.body.availableDays).toBeCloseTo(availableDays, 4);
+    expect(cached.body.source).toBe('HCM_CACHE');
+
+    const refreshed = await request(app.getHttpServer())
+      .get('/balances')
+      .query({
+        employeeId: 'E-DEC-BAL',
+        locationId: 'L-DEC-BAL',
+        refresh: 'true',
+      })
+      .expect(200);
+
+    expect(refreshed.body.availableDays).toBeCloseTo(availableDays, 4);
+  });
+
   it('batch sync reconciles when HCM increases independently', async () => {
     await request(app.getHttpServer())
       .post('/mock-hcm/test/balances')

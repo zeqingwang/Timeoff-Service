@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ReadyOnBalance } from './balances/balance.entity';
 import { TimeOffRequest } from './timeoff/time-off-request.entity';
+import { ApprovalLock } from './timeoff/approval-lock.entity';
 import { HcmSyncLog } from './hcm/hcm-sync-log.entity';
 import { MockHcmBalance } from './mock-hcm/mock-hcm-balance.entity';
 import { MockHcmTimeOffUsage } from './mock-hcm/mock-hcm-time-off-usage.entity';
@@ -19,6 +21,7 @@ import { TimeOffModule } from './timeoff/timeoff.module';
         entities: [
           ReadyOnBalance,
           TimeOffRequest,
+          ApprovalLock,
           HcmSyncLog,
           MockHcmBalance,
           MockHcmTimeOffUsage,

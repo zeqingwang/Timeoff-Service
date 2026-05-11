@@ -1,4 +1,4 @@
-﻿import {
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -72,6 +72,15 @@ export function requestNotApprovable(message: string): ConflictException {
 export function requestNotCancellable(message: string): ConflictException {
   return new ConflictException({
     errorCode: ErrorCodes.REQUEST_NOT_CANCELLABLE,
+    message,
+  });
+}
+
+export function approvalInProgress(
+  message = 'Another approval is in progress for this resource',
+): ConflictException {
+  return new ConflictException({
+    errorCode: ErrorCodes.APPROVAL_IN_PROGRESS,
     message,
   });
 }

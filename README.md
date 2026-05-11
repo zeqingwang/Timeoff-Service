@@ -19,6 +19,8 @@ Backend service for employee time-off requests, cached balances, and synchroniza
 npm install
 ```
 
+Copy `.env.example` to `.env` in the project root if you want file-based config. At startup, `app.module` loads it via [dotenv](https://github.com/motdotla/dotenv) (`import 'dotenv/config'`). Values already set in your environment take precedence. You can still rely on defaults without a `.env` file.
+
 ## Run
 
 Development (watch mode):
@@ -41,6 +43,14 @@ On startup the app sets **`HCM_BASE_URL`** to `http://127.0.0.1:<PORT>/mock-hcm`
 set HCM_BASE_URL=http://127.0.0.1:3000/mock-hcm
 ```
 
+Optional approval lock tuning (serialize `POST .../approve` per employee + location):
+
+```bash
+set APPROVAL_LOCK_TTL_MS=30000
+set APPROVAL_LOCK_ACQUIRE_TIMEOUT_MS=5000
+set APPROVAL_LOCK_RETRY_DELAY_MS=50
+```
+
 Production:
 
 ```bash
@@ -56,12 +66,13 @@ npm test
 
 # End-to-end only (same app + SQLite + mock HCM HTTP)
 npm run test:e2e
-
+# End-to-end (include the details about concurrent tests)
+npm run test:e2e:detail
 # Coverage: unit + E2E combined (recommended for TRD proof)
 npm run test:cov
 ```
 
-Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **96%** lines, **96%** statements, **93%** functions, and **84%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
+Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **97.4%** lines, **97%** statements, **94.6%** functions, and **84.5%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
 
 ## Main APIs (ReadyOn)
 
@@ -91,3 +102,4 @@ Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.sp
 - **HCM is the source of truth** for balances at create and approve time; ReadyOn `readyon_balances` is a cache updated after successful HCM reads or filings and after batch sync.
 - ReadyOn **never reads `mock_hcm_*` tables directly**; it uses the **`HcmClient`** HTTP adapter to call mock HCM routes.
 - Approval uses a stable idempotency key (`<requestId>:approval`) so duplicate approvals do not double-deduct in HCM.
+- Concurrent approvals for the same employee and location are serialized via the `approval_locks` table (see `APPROVAL_LOCK_*` env vars and [TRD.md](TRD.md) §16).

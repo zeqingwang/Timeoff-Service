@@ -3,16 +3,16 @@ import {
   CreateDateColumn,
   Entity,
   PrimaryGeneratedColumn,
-  Unique,
   UpdateDateColumn,
 } from 'typeorm';
-import { decimalColumnTransformer } from '../common/decimal-column.transformer';
 
-@Entity('readyon_balances')
-@Unique(['employeeId', 'locationId'])
-export class ReadyOnBalance {
+@Entity('approval_locks')
+export class ApprovalLock {
   @PrimaryGeneratedColumn()
   id: number;
+
+  @Column({ name: 'lock_key', type: 'varchar', unique: true })
+  lockKey: string;
 
   @Column({ name: 'employee_id', type: 'varchar' })
   employeeId: string;
@@ -20,17 +20,8 @@ export class ReadyOnBalance {
   @Column({ name: 'location_id', type: 'varchar' })
   locationId: string;
 
-  @Column({
-    name: 'available_days',
-    type: 'decimal',
-    precision: 14,
-    scale: 4,
-    transformer: decimalColumnTransformer,
-  })
-  availableDays: number;
-
-  @Column({ name: 'last_synced_at', type: 'datetime' })
-  lastSyncedAt: Date;
+  @Column({ name: 'expires_at', type: 'datetime' })
+  expiresAt: Date;
 
   @CreateDateColumn({ name: 'created_at', type: 'datetime' })
   createdAt: Date;

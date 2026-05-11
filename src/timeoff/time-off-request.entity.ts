@@ -6,7 +6,8 @@ import {
   Unique,
   UpdateDateColumn,
 } from 'typeorm';
-import { TimeOffRequestStatus } from '../timeoff/time-off-status';
+import { decimalColumnTransformer } from '../common/decimal-column.transformer';
+import { TimeOffRequestStatus } from './time-off-status';
 
 @Entity('time_off_requests')
 @Unique(['requestId'])
@@ -28,10 +29,7 @@ export class TimeOffRequest {
     type: 'decimal',
     precision: 14,
     scale: 4,
-    transformer: {
-      to: (v: number | string) => v,
-      from: (v: string | null) => (v === null ? null : parseFloat(v)),
-    },
+    transformer: decimalColumnTransformer,
   })
   requestedDays: number;
 

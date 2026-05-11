@@ -3,10 +3,66 @@ import type { INestApplication } from '@nestjs/common';
 import { MockHcmFailureMode } from '../../src/mock-hcm/mock-hcm-failure-mode';
 import { createE2eApp } from './setup-app';
 
+const e2eVerbose = process.env.E2E_VERBOSE === '1';
+let detailTestName = 'unknown test';
+let detailLines: string[] = [];
+/** Only the concurrency / race E2E tests emit buffered detail logs in E2E_VERBOSE mode. */
+let detailFlushEnabled = false;
+
+function isConcurrencyDetailTest(fullName: string): boolean {
+  const markers = [
+    'serialize via approval lock',
+    'two different requests for same employee/location: only one approval',
+    'two managers approve the same request concurrently',
+    'two managers reject the same request concurrently',
+    'one manager approves and another rejects the same request concurrently',
+  ];
+  return markers.some((m) => fullName.includes(m));
+}
+
+/** One-line summary of a Supertest response for verbose E2E logs. */
+function httpBrief(res: { status: number; body?: unknown }): string {
+  const bits = [`HTTP ${res.status}`];
+  if (res.body && typeof res.body === 'object' && res.body !== null) {
+    const b = res.body as Record<string, unknown>;
+    if (typeof b.status === 'string') {
+      bits.push(`record ${b.status}`);
+    }
+    if (typeof b.errorCode === 'string') {
+      bits.push(`error ${b.errorCode}`);
+    }
+    if (typeof b.message === 'string' && b.message.length < 120) {
+      bits.push(b.message);
+    }
+  }
+  return bits.join(' · ');
+}
+
+const dlog = (title: string, lines?: string | readonly string[]) => {
+  if (!e2eVerbose || !detailFlushEnabled) {
+    return;
+  }
+  detailLines.push(`▸ ${title}`);
+  if (lines == null) {
+    return;
+  }
+  const list = typeof lines === 'string' ? [lines] : [...lines];
+  for (const line of list) {
+    detailLines.push(`  ${line}`);
+  }
+};
+
 describe('Time-off lifecycle (e2e)', () => {
   let app: INestApplication;
 
   beforeEach(async () => {
+    if (e2eVerbose) {
+      detailTestName = expect.getState().currentTestName ?? 'unknown test';
+      detailLines = [];
+      detailFlushEnabled = isConcurrencyDetailTest(detailTestName);
+    } else {
+      detailFlushEnabled = false;
+    }
     app = await createE2eApp();
     await request(app.getHttpServer())
       .post('/mock-hcm/test/failure-mode')
@@ -15,6 +71,21 @@ describe('Time-off lifecycle (e2e)', () => {
   });
 
   afterEach(async () => {
+    if (e2eVerbose) {
+      if (detailFlushEnabled && detailLines.length > 0) {
+        // One console call so Jest prints a single block (not one stack frame per line).
+        const block = [
+          `[e2e:detail] ${detailTestName}`,
+          ...detailLines.map((line) => `[e2e:detail] ${line}`),
+        ].join('\n');
+        // eslint-disable-next-line no-console -- E2E verbose trace only
+        console.log(block);
+      } else {
+        // Every other test: title only (no buffered detail lines).
+        // eslint-disable-next-line no-console -- E2E verbose trace only
+        console.log(`[e2e:detail] ${detailTestName}`);
+      }
+    }
     await app.close();
   });
 
@@ -48,6 +119,41 @@ describe('Time-off lifecycle (e2e)', () => {
 
     expect(created.body.status).toBe('PENDING_APPROVAL');
     expect(created.body.requestId).toBeDefined();
+  });
+
+  it('decimal requestedDays round-trip on create, GET, approve, and HCM balance', async () => {
+    await seedHcm('E-DEC-REQ', 'L-DEC-REQ', 9.5);
+    const requestedDays = 1.25;
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E-DEC-REQ',
+        locationId: 'L-DEC-REQ',
+        requestedDays,
+      })
+      .expect(200);
+
+    expect(created.body.status).toBe('PENDING_APPROVAL');
+    expect(created.body.requestedDays).toBeCloseTo(requestedDays, 4);
+
+    const fetched = await request(app.getHttpServer())
+      .get(`/time-off-requests/${created.body.requestId}`)
+      .expect(200);
+
+    expect(fetched.body.requestedDays).toBeCloseTo(requestedDays, 4);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(200);
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E-DEC-REQ', locationId: 'L-DEC-REQ' })
+      .expect(200);
+
+    expect(hcmBal.body.availableDays).toBeCloseTo(9.5 - requestedDays, 4);
   });
 
   it('create succeeds when ReadyOn cache is stale but HCM has enough balance', async () => {
@@ -439,5 +545,368 @@ describe('Time-off lifecycle (e2e)', () => {
       .post(`/time-off-requests/${created.body.requestId}/cancel`)
       .send({ employeeId: 'E123' })
       .expect(409);
+  });
+
+  it('concurrent approvals for 2 request with same employee-location serialize via approval lock, the blance can fulfill both requests both requests', async () => {
+    await seedHcm('E200', 'L200', 10);
+
+    if (detailFlushEnabled) {
+      const before = await request(app.getHttpServer())
+        .get('/mock-hcm/balances')
+        .query({ employeeId: 'E200', locationId: 'L200' });
+      dlog('Mock HCM before concurrent approves', [
+        'Employee E200 @ location L200',
+        `${before.body.availableDays} days available (expect 10 right after seed)`,
+      ]);
+    }
+
+    const a = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E200',
+        locationId: 'L200',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const b = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E200',
+        locationId: 'L200',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    dlog('Two separate requests (2 days each)', [
+      `Request A: ${a.body.requestId}`,
+      `Request B: ${b.body.requestId}`,
+    ]);
+
+    const [ra, rb] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${a.body.requestId}/approve`)
+        .send({ managerId: 'M1' }),
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${b.body.requestId}/approve`)
+        .send({ managerId: 'M1' }),
+    ]);
+
+    dlog('Concurrent approve — both should win (serialized lock)', [
+      `Approve A: ${httpBrief(ra)}`,
+      `Approve B: ${httpBrief(rb)}`,
+    ]);
+
+    expect(ra.status).toBe(200);
+    expect(rb.status).toBe(200);
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E200', locationId: 'L200' })
+      .expect(200);
+
+    dlog(
+      'Mock HCM after both requests approved',
+      `${hcmBal.body.availableDays} days left (10 − 2 − 2 → expect 6)`,
+    );
+
+    expect(hcmBal.body.availableDays).toBe(6);
+  });
+
+  it('two different requests for same employee/location: only one approval succeeds when balance fits one', async () => {
+    await seedHcm('E200Y', 'L200Y', 3);
+
+    if (detailFlushEnabled) {
+      const before = await request(app.getHttpServer())
+        .get('/mock-hcm/balances')
+        .query({ employeeId: 'E200Y', locationId: 'L200Y' });
+      dlog('Mock HCM before competing approvals', [
+        'Employee E200Y @ location L200Y',
+        `${before.body.availableDays} days available`,
+      ]);
+    }
+
+    const first = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E200Y',
+        locationId: 'L200Y',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const second = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E200Y',
+        locationId: 'L200Y',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    dlog('Two pending requests compete for remaining balance', [
+      `Request 1: ${first.body.requestId}`,
+      `Request 2: ${second.body.requestId}`,
+      'Only one can be approved because available is 3 and each needs 2',
+    ]);
+
+    const [approve1, approve2] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${first.body.requestId}/approve`)
+        .send({ managerId: 'M1' }),
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${second.body.requestId}/approve`)
+        .send({ managerId: 'M1' }),
+    ]);
+
+    dlog('Concurrent approvals outcome', [
+      `Request 1: ${httpBrief(approve1)}`,
+      `Request 2: ${httpBrief(approve2)}`,
+      'Expect one HTTP 200 and one HTTP 409',
+    ]);
+
+    const statuses = [approve1.status, approve2.status].sort((a, b) => a - b);
+    expect(statuses).toEqual([200, 409]);
+
+    const finalBalance = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E200Y', locationId: 'L200Y' })
+      .expect(200);
+
+    dlog(
+      'Mock HCM after competing approvals',
+      `${finalBalance.body.availableDays} days left (3 − 2 → expect 1)`,
+    );
+
+    expect(finalBalance.body.availableDays).toBe(1);
+  });
+
+  it('two managers approve the same request concurrently; second is idempotent', async () => {
+    await seedHcm('E201', 'L201', 10);
+
+    if (detailFlushEnabled) {
+      const before = await request(app.getHttpServer())
+        .get('/mock-hcm/balances')
+        .query({ employeeId: 'E201', locationId: 'L201' });
+      dlog('Mock HCM after seed', [
+        'Employee E201 @ location L201',
+        `${before.body.availableDays} days available`,
+      ]);
+    }
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E201',
+        locationId: 'L201',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const requestId = created.body.requestId as string;
+
+    dlog('Single pending request', [
+      `id ${requestId}`,
+      `status ${created.body.status} · 2 days requested`,
+    ]);
+
+    const [r1, r2] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M1' }),
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M2' }),
+    ]);
+
+    dlog('Same request approved twice in parallel (idempotent)', [
+      `Manager M1: ${httpBrief(r1)} · hcmTransactionId ${String(r1.body?.hcmTransactionId ?? '—')}`,
+      `Manager M2: ${httpBrief(r2)} · hcmTransactionId ${String(r2.body?.hcmTransactionId ?? '—')}`,
+      '(both HTTP 200; second must reuse the same HCM transaction id)',
+    ]);
+
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r1.body.status).toBe('APPROVED');
+    expect(r2.body.status).toBe('APPROVED');
+    expect(r1.body.hcmTransactionId).toBe(r2.body.hcmTransactionId);
+
+    if (detailFlushEnabled) {
+      const getReq = await request(app.getHttpServer())
+        .get(`/time-off-requests/${requestId}`)
+        .expect(200);
+
+      dlog('Persisted request after dual approve', [
+        `GET /time-off-requests/${requestId}`,
+        `status ${getReq.body.status} · requestedDays ${getReq.body.requestedDays}`,
+      ]);
+    }
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E201', locationId: 'L201' })
+      .expect(200);
+
+    dlog(
+      'Mock HCM after single usage filed',
+      `${hcmBal.body.availableDays} days left (10 − 2 → expect 8)`,
+    );
+
+    expect(hcmBal.body.availableDays).toBe(8);
+  });
+
+  it('two managers reject the same request concurrently; ends REJECTED once', async () => {
+    await seedHcm('E202', 'L202', 10);
+
+    if (detailFlushEnabled) {
+      const before = await request(app.getHttpServer())
+        .get('/mock-hcm/balances')
+        .query({ employeeId: 'E202', locationId: 'L202' });
+      dlog('Mock HCM after seed', [
+        'Employee E202 @ location L202',
+        `${before.body.availableDays} days available`,
+      ]);
+    }
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E202',
+        locationId: 'L202',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const requestId = created.body.requestId as string;
+
+    dlog('Pending request before concurrent rejects', [
+      `id ${requestId}`,
+      `status ${created.body.status}`,
+    ]);
+
+    const [r1, r2] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/reject`)
+        .send({ managerId: 'M1', reason: 'first' }),
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/reject`)
+        .send({ managerId: 'M2', reason: 'second' }),
+    ]);
+
+    dlog('Concurrent reject — one succeeds, duplicate may be 409', [
+      `Manager M1 (reason "first"):  ${httpBrief(r1)}`,
+      `Manager M2 (reason "second"): ${httpBrief(r2)}`,
+    ]);
+
+    expect([r1.status, r2.status].every((s) => s === 200 || s === 409)).toBe(
+      true,
+    );
+    expect([r1.status, r2.status].some((s) => s === 200)).toBe(true);
+    if (r1.status === 200) {
+      expect(r1.body.status).toBe('REJECTED');
+    }
+    if (r2.status === 200) {
+      expect(r2.body.status).toBe('REJECTED');
+    }
+
+    const get = await request(app.getHttpServer())
+      .get(`/time-off-requests/${requestId}`)
+      .expect(200);
+
+    dlog('Persisted request after rejects', [
+      `GET /time-off-requests/${requestId}`,
+      `status ${get.body.status} · managerId ${get.body.managerId ?? '—'}`,
+    ]);
+
+    expect(get.body.status).toBe('REJECTED');
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E202', locationId: 'L202' })
+      .expect(200);
+
+    dlog(
+      'Mock HCM after reject (no usage filed)',
+      `${hcmBal.body.availableDays} days — unchanged from seed (expect 10)`,
+    );
+
+    expect(hcmBal.body.availableDays).toBe(10);
+  });
+
+  it('one manager approves and another rejects the same request concurrently; exactly one wins', async () => {
+    await seedHcm('E203', 'L203', 10);
+
+    if (detailFlushEnabled) {
+      const before = await request(app.getHttpServer())
+        .get('/mock-hcm/balances')
+        .query({ employeeId: 'E203', locationId: 'L203' });
+      dlog('Mock HCM after seed', [
+        'Employee E203 @ location L203',
+        `${before.body.availableDays} days available`,
+      ]);
+    }
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E203',
+        locationId: 'L203',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const requestId = created.body.requestId as string;
+
+    dlog('Pending request — approve vs reject race', [
+      `id ${requestId}`,
+      `status ${created.body.status}`,
+    ]);
+
+    const [approveRes, rejectRes] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M1' }),
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/reject`)
+        .send({ managerId: 'M2', reason: 'coverage' }),
+    ]);
+
+    dlog('Concurrent approve (M1) vs reject (M2)', [
+      `Approve: ${httpBrief(approveRes)}`,
+      `Reject:  ${httpBrief(rejectRes)}`,
+      'Expect one HTTP 200 and one HTTP 409 (loser)',
+    ]);
+
+    const statuses = [approveRes.status, rejectRes.status].sort((a, b) => a - b);
+    expect(statuses).toEqual([200, 409]);
+
+    const get = await request(app.getHttpServer())
+      .get(`/time-off-requests/${requestId}`)
+      .expect(200);
+
+    dlog('Winner recorded in DB', [
+      `GET /time-off-requests/${requestId}`,
+      `final status ${get.body.status} · requestedDays ${get.body.requestedDays}`,
+    ]);
+
+    expect(['APPROVED', 'REJECTED']).toContain(get.body.status);
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E203', locationId: 'L203' })
+      .expect(200);
+
+    dlog(
+      'Mock HCM after race',
+      get.body.status === 'APPROVED'
+        ? `${hcmBal.body.availableDays} days (approved → expect 8)`
+        : `${hcmBal.body.availableDays} days (rejected → no deduction, expect 10)`,
+    );
+
+    if (get.body.status === 'APPROVED') {
+      expect(hcmBal.body.availableDays).toBe(8);
+    } else {
+      expect(hcmBal.body.availableDays).toBe(10);
+    }
   });
 });
