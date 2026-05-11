@@ -961,6 +961,8 @@ Solution:
 
 SQLite has limited concurrent write behavior compared with production databases. The `approval_locks` mechanism serializes approval **logic** per employee/location within this process and database file; it does not replace distributed locking across multiple application instances. For this take-home, transactions, idempotency, and `approval_locks` are sufficient. In production, this design should move to PostgreSQL with stronger isolation and possibly row-level or advisory locks, plus queue-based approval processing if multiple ReadyOn nodes exist.
 
+**TTL tradeoff:** `expires_at` must be long enough for slow HCM calls under `APPROVAL_LOCK_TTL_MS`; if it is too short, a second caller might steal the lock while the first is still in flight. If it is too long, a crashed worker can leave others seeing `APPROVAL_IN_PROGRESS` until the row expires. Tuning differs between SQLite and PostgreSQL workloads; the same insert/delete lock pattern ports, but timeouts and contention behavior should be revisited for production.
+
 ---
 
 ## 17. Alternatives Considered
