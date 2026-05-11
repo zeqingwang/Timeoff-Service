@@ -72,7 +72,7 @@ npm run test:e2e:detail
 npm run test:cov
 ```
 
-Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **97.4%** lines, **97%** statements, **94.6%** functions, and **84.5%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
+Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **97.4%** lines, **97%** statements, **94.6%** functions, and **85.6%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
 
 ## Main APIs (ReadyOn)
 
