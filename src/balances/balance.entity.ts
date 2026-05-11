@@ -6,6 +6,7 @@ import {
   Unique,
   UpdateDateColumn,
 } from 'typeorm';
+import { decimalColumnTransformer } from '../common/decimal-column.transformer';
 
 @Entity('readyon_balances')
 @Unique(['employeeId', 'locationId'])
@@ -24,10 +25,7 @@ export class ReadyOnBalance {
     type: 'decimal',
     precision: 14,
     scale: 4,
-    transformer: {
-      to: (v: number | string) => v,
-      from: (v: string | null) => (v === null ? null : parseFloat(v)),
-    },
+    transformer: decimalColumnTransformer,
   })
   availableDays: number;
 

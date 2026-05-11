@@ -1,6 +1,5 @@
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { BalancesService } from '../../src/balances/balances.service';
 import { ReadyOnBalance } from '../../src/balances/balance.entity';
 import { HcmSyncLog } from '../../src/hcm/hcm-sync-log.entity';
@@ -8,14 +7,20 @@ import { HCM_CLIENT } from '../../src/hcm/hcm-client.interface';
 import type { HcmClient } from '../../src/hcm/hcm-client.interface';
 import { HcmSyncType } from '../../src/hcm/hcm-sync-types';
 import { HttpException, UnprocessableEntityException } from '@nestjs/common';
+import { HcmSyncLogStatus } from '../../src/hcm/hcm-sync-types';
 
 describe('BalancesService', () => {
   let service: BalancesService;
   let hcm: jest.Mocked<HcmClient>;
-  let balanceRepo: jest.Mocked<
-    Pick<Repository<ReadyOnBalance>, 'findOne' | 'save' | 'create'>
-  >;
-  let syncRepo: jest.Mocked<Pick<Repository<HcmSyncLog>, 'create' | 'save'>>;
+  let balanceRepo: {
+    findOne: jest.Mock;
+    save: jest.Mock;
+    create: jest.Mock;
+  };
+  let syncRepo: {
+    create: jest.Mock;
+    save: jest.Mock;
+  };
 
   beforeEach(async () => {
     hcm = {
@@ -194,5 +199,117 @@ describe('BalancesService', () => {
     const res = await service.getBalances('E1', 'L1', false);
     expect(res.availableDays).toBe(7);
     expect(hcm.getBalance).toHaveBeenCalled();
+  });
+
+  it('getBalances skips cache read when refresh is true and uses HCM result', async () => {
+    balanceRepo.findOne.mockResolvedValue({
+      id: 1,
+      employeeId: 'E1',
+      locationId: 'L1',
+      availableDays: 1,
+      lastSyncedAt: new Date('2026-01-01T00:00:00.000Z'),
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    hcm.getBalance.mockResolvedValue({
+      type: 'balance',
+      employeeId: 'E1',
+      locationId: 'L1',
+      availableDays: 42,
+      version: 1,
+    });
+    balanceRepo.save.mockImplementation(async (x) => x as ReadyOnBalance);
+
+    const res = await service.getBalances('E1', 'L1', true);
+
+    expect(res.availableDays).toBe(42);
+    expect(hcm.getBalance).toHaveBeenCalledWith('E1', 'L1');
+    expect(balanceRepo.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  it('syncFromHcm partial failure logs PARTIAL_FAILURE when some upserts fail', async () => {
+    hcm.getBatchBalances.mockResolvedValue({
+      type: 'ok',
+      balances: [
+        {
+          employeeId: 'E1',
+          locationId: 'L1',
+          availableDays: 1,
+          version: 1,
+        },
+        {
+          employeeId: 'E2',
+          locationId: 'L2',
+          availableDays: 2,
+          version: 1,
+        },
+      ],
+    });
+    balanceRepo.findOne.mockResolvedValue(null);
+    balanceRepo.save
+      .mockRejectedValueOnce(new Error('db'))
+      .mockImplementation(async (x) => x as ReadyOnBalance);
+
+    const res = await service.syncFromHcm();
+
+    expect(res.recordsFailed).toBe(1);
+    expect(res.recordsUpserted).toBe(1);
+    expect(res.status).toBe('SUCCESS');
+
+    const lastLog = syncRepo.save.mock.calls.at(-1)?.[0] as {
+      errorCode: string | null;
+      status: HcmSyncLogStatus;
+    };
+    expect(lastLog.errorCode).toBe('PARTIAL_FAILURE');
+    expect(lastLog.status).toBe(HcmSyncLogStatus.SUCCESS);
+  });
+
+  it('upsertCache updates existing row when batch sync finds prior cache', async () => {
+    const existing = {
+      id: 9,
+      employeeId: 'E1',
+      locationId: 'L1',
+      availableDays: 1,
+      lastSyncedAt: new Date('2025-01-01T00:00:00.000Z'),
+      createdAt: new Date('2025-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2025-01-01T00:00:00.000Z'),
+    };
+    hcm.getBatchBalances.mockResolvedValue({
+      type: 'ok',
+      balances: [
+        {
+          employeeId: 'E1',
+          locationId: 'L1',
+          availableDays: 9,
+          version: 2,
+        },
+      ],
+    });
+    balanceRepo.findOne.mockResolvedValue(existing);
+    balanceRepo.save.mockImplementation(async (x) => x as ReadyOnBalance);
+
+    await service.syncFromHcm();
+
+    expect(balanceRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 9,
+        availableDays: 9,
+      }),
+    );
+  });
+
+  it('upsertBalanceCache writes through to repository', async () => {
+    balanceRepo.findOne.mockResolvedValue(null);
+    balanceRepo.save.mockImplementation(async (x) => x as ReadyOnBalance);
+
+    await service.upsertBalanceCache('E1', 'L1', 12);
+
+    expect(balanceRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        employeeId: 'E1',
+        locationId: 'L1',
+        availableDays: 12,
+      }),
+    );
   });
 });
