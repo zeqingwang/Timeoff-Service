@@ -21,6 +21,7 @@ import {
   requestNotFound,
 } from '../common/errors';
 import type { CreateTimeOffRequestDto } from './dto/timeoff.dto';
+import { ApprovalLockService, approvalLockKey } from './approval-lock.service';
 
 function newRequestId(): string {
   return `REQ_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
@@ -35,6 +36,7 @@ export class TimeOffService {
     private readonly balanceRepo: Repository<ReadyOnBalance>,
     @Inject(HCM_CLIENT) private readonly hcmClient: HcmClient,
     private readonly balancesService: BalancesService,
+    private readonly approvalLockService: ApprovalLockService,
   ) {}
 
   async createRequest(dto: CreateTimeOffRequestDto) {
@@ -172,117 +174,147 @@ export class TimeOffService {
       throw requestNotApprovable('Request is not pending approval');
     }
 
-    const bal = await this.hcmClient.getBalance(
+    const lockKey = approvalLockKey(existing.employeeId, existing.locationId);
+    await this.approvalLockService.acquire(
       existing.employeeId,
       existing.locationId,
     );
-    if (bal.type === 'transport') {
-      await this.balancesService.recordSyncLog({
-        syncType: HcmSyncType.REALTIME_BALANCE,
-        status: HcmSyncLogStatus.FAILED,
-        employeeId: existing.employeeId,
-        locationId: existing.locationId,
-        requestId,
-        errorCode: bal.code,
-        errorMessage: 'HCM realtime balance failed during approval',
-      });
-      if (bal.code === 'INVALID_RESPONSE') {
-        throw hcmInvalidResponse();
+
+    try {
+      const fresh = await this.requestRepo.findOne({ where: { requestId } });
+      if (!fresh) {
+        throw requestNotFound();
       }
-      throw hcmUnavailable();
-    }
-    if (bal.type === 'invalid_dimension') {
-      await this.balancesService.recordSyncLog({
-        syncType: HcmSyncType.REALTIME_BALANCE,
-        status: HcmSyncLogStatus.FAILED,
-        employeeId: existing.employeeId,
-        locationId: existing.locationId,
-        requestId,
-        errorCode: 'INVALID_DIMENSION',
-        errorMessage: bal.message,
-      });
-      throw invalidDimension(bal.message);
-    }
+      if (fresh.status === TimeOffRequestStatus.APPROVED) {
+        const remaining = await this.getCachedBalance(
+          fresh.employeeId,
+          fresh.locationId,
+        );
+        return {
+          requestId,
+          status: TimeOffRequestStatus.APPROVED,
+          hcmTransactionId: fresh.hcmTransactionId,
+          remainingDays: remaining,
+        };
+      }
+      if (fresh.status !== TimeOffRequestStatus.PENDING_APPROVAL) {
+        throw requestNotApprovable('Request is not pending approval');
+      }
 
-    if (bal.availableDays < existing.requestedDays) {
-      throw insufficientBalance(
-        'Requested days exceed current HCM balance',
-        bal.availableDays,
-        existing.requestedDays,
+      const bal = await this.hcmClient.getBalance(
+        fresh.employeeId,
+        fresh.locationId,
       );
-    }
+      if (bal.type === 'transport') {
+        await this.balancesService.recordSyncLog({
+          syncType: HcmSyncType.REALTIME_BALANCE,
+          status: HcmSyncLogStatus.FAILED,
+          employeeId: fresh.employeeId,
+          locationId: fresh.locationId,
+          requestId,
+          errorCode: bal.code,
+          errorMessage: 'HCM realtime balance failed during approval',
+        });
+        if (bal.code === 'INVALID_RESPONSE') {
+          throw hcmInvalidResponse();
+        }
+        throw hcmUnavailable();
+      }
+      if (bal.type === 'invalid_dimension') {
+        await this.balancesService.recordSyncLog({
+          syncType: HcmSyncType.REALTIME_BALANCE,
+          status: HcmSyncLogStatus.FAILED,
+          employeeId: fresh.employeeId,
+          locationId: fresh.locationId,
+          requestId,
+          errorCode: 'INVALID_DIMENSION',
+          errorMessage: bal.message,
+        });
+        throw invalidDimension(bal.message);
+      }
 
-    const idempotencyKey = approvalIdempotencyKey(requestId);
-    const submit = await this.hcmClient.submitTimeOffUsage({
-      employeeId: existing.employeeId,
-      locationId: existing.locationId,
-      days: existing.requestedDays,
-      externalRequestId: requestId,
-      idempotencyKey,
-    });
+      if (bal.availableDays < fresh.requestedDays) {
+        throw insufficientBalance(
+          'Requested days exceed current HCM balance',
+          bal.availableDays,
+          fresh.requestedDays,
+        );
+      }
 
-    if (submit.type === 'transport') {
+      const idempotencyKey = approvalIdempotencyKey(requestId);
+      const submit = await this.hcmClient.submitTimeOffUsage({
+        employeeId: fresh.employeeId,
+        locationId: fresh.locationId,
+        days: fresh.requestedDays,
+        externalRequestId: requestId,
+        idempotencyKey,
+      });
+
+      if (submit.type === 'transport') {
+        await this.balancesService.recordSyncLog({
+          syncType: HcmSyncType.SUBMIT_USAGE,
+          status: HcmSyncLogStatus.FAILED,
+          employeeId: fresh.employeeId,
+          locationId: fresh.locationId,
+          requestId,
+          errorCode: submit.code,
+          errorMessage: 'HCM submit usage failed',
+        });
+        if (submit.code === 'INVALID_RESPONSE') {
+          await this.markFailedHcm(fresh.id, managerId);
+          throw hcmInvalidResponse();
+        }
+        throw hcmUnavailable();
+      }
+
+      if (submit.type === 'insufficient_balance') {
+        fresh.managerId = managerId;
+        fresh.status = TimeOffRequestStatus.FAILED_HCM_SUBMISSION;
+        await this.requestRepo.save(fresh);
+        await this.balancesService.recordSyncLog({
+          syncType: HcmSyncType.SUBMIT_USAGE,
+          status: HcmSyncLogStatus.FAILED,
+          employeeId: fresh.employeeId,
+          locationId: fresh.locationId,
+          requestId,
+          errorCode: 'INSUFFICIENT_BALANCE',
+          errorMessage: submit.message,
+        });
+        throw insufficientBalance(
+          submit.message,
+          submit.currentBalance,
+          fresh.requestedDays,
+        );
+      }
+
+      fresh.status = TimeOffRequestStatus.APPROVED;
+      fresh.managerId = managerId;
+      fresh.hcmTransactionId = submit.hcmTransactionId;
+      fresh.idempotencyKey = idempotencyKey;
+      await this.requestRepo.save(fresh);
+
+      await this.balancesService.upsertBalanceCache(
+        fresh.employeeId,
+        fresh.locationId,
+        submit.remainingDays,
+      );
       await this.balancesService.recordSyncLog({
         syncType: HcmSyncType.SUBMIT_USAGE,
-        status: HcmSyncLogStatus.FAILED,
-        employeeId: existing.employeeId,
-        locationId: existing.locationId,
+        status: HcmSyncLogStatus.SUCCESS,
+        employeeId: fresh.employeeId,
+        locationId: fresh.locationId,
         requestId,
-        errorCode: submit.code,
-        errorMessage: 'HCM submit usage failed',
       });
-      if (submit.code === 'INVALID_RESPONSE') {
-        await this.markFailedHcm(existing.id, managerId);
-        throw hcmInvalidResponse();
-      }
-      throw hcmUnavailable();
-    }
 
-    if (submit.type === 'insufficient_balance') {
-      existing.managerId = managerId;
-      existing.status = TimeOffRequestStatus.FAILED_HCM_SUBMISSION;
-      await this.requestRepo.save(existing);
-      await this.balancesService.recordSyncLog({
-        syncType: HcmSyncType.SUBMIT_USAGE,
-        status: HcmSyncLogStatus.FAILED,
-        employeeId: existing.employeeId,
-        locationId: existing.locationId,
+      return {
         requestId,
-        errorCode: 'INSUFFICIENT_BALANCE',
-        errorMessage: submit.message,
-      });
-      throw insufficientBalance(
-        submit.message,
-        submit.currentBalance,
-        existing.requestedDays,
-      );
+        status: TimeOffRequestStatus.APPROVED,
+        hcmTransactionId: submit.hcmTransactionId,
+        remainingDays: submit.remainingDays,
+      };
+    } finally {
+      await this.approvalLockService.release(lockKey);
     }
-
-    existing.status = TimeOffRequestStatus.APPROVED;
-    existing.managerId = managerId;
-    existing.hcmTransactionId = submit.hcmTransactionId;
-    existing.idempotencyKey = idempotencyKey;
-    await this.requestRepo.save(existing);
-
-    await this.balancesService.upsertBalanceCache(
-      existing.employeeId,
-      existing.locationId,
-      submit.remainingDays,
-    );
-    await this.balancesService.recordSyncLog({
-      syncType: HcmSyncType.SUBMIT_USAGE,
-      status: HcmSyncLogStatus.SUCCESS,
-      employeeId: existing.employeeId,
-      locationId: existing.locationId,
-      requestId,
-    });
-
-    return {
-      requestId,
-      status: TimeOffRequestStatus.APPROVED,
-      hcmTransactionId: submit.hcmTransactionId,
-      remainingDays: submit.remainingDays,
-    };
   }
 
   async reject(requestId: string, managerId: string, reason?: string) {

@@ -8,6 +8,7 @@ import { ReadyOnBalance } from '../../src/balances/balance.entity';
 import { HCM_CLIENT } from '../../src/hcm/hcm-client.interface';
 import type { HcmClient } from '../../src/hcm/hcm-client.interface';
 import { BalancesService } from '../../src/balances/balances.service';
+import { ApprovalLockService } from '../../src/timeoff/approval-lock.service';
 import { HttpException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { HcmSyncLogStatus, HcmSyncType } from '../../src/hcm/hcm-sync-types';
 import { ErrorCodes } from '../../src/common/error-codes';
@@ -25,8 +26,16 @@ describe('TimeOffService', () => {
   let balancesService: jest.Mocked<
     Pick<BalancesService, 'recordSyncLog' | 'upsertBalanceCache'>
   >;
+  let approvalLock: {
+    acquire: jest.Mock;
+    release: jest.Mock;
+  };
 
   beforeEach(async () => {
+    approvalLock = {
+      acquire: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
     hcm = {
       getBalance: jest.fn(),
       submitTimeOffUsage: jest.fn(),
@@ -54,6 +63,7 @@ describe('TimeOffService', () => {
         { provide: getRepositoryToken(ReadyOnBalance), useValue: balanceRepo },
         { provide: HCM_CLIENT, useValue: hcm },
         { provide: BalancesService, useValue: balancesService },
+        { provide: ApprovalLockService, useValue: approvalLock },
       ],
     }).compile();
 
@@ -164,6 +174,8 @@ describe('TimeOffService', () => {
 
     const res = await service.approve('REQ_1', 'M1');
     expect(res.status).toBe(TimeOffRequestStatus.APPROVED);
+    expect(approvalLock.acquire).toHaveBeenCalledWith('E1', 'L1');
+    expect(approvalLock.release).toHaveBeenCalledWith('E1:L1');
     expect(balancesService.upsertBalanceCache).toHaveBeenCalledWith(
       'E1',
       'L1',
@@ -194,6 +206,7 @@ describe('TimeOffService', () => {
     const res = await service.approve('REQ_1', 'M1');
     expect(res.hcmTransactionId).toBe('TXN');
     expect(hcm.submitTimeOffUsage).not.toHaveBeenCalled();
+    expect(approvalLock.acquire).not.toHaveBeenCalled();
   });
 
   it('fails approval when not pending', async () => {
@@ -202,6 +215,7 @@ describe('TimeOffService', () => {
     } as TimeOffRequest);
 
     await expect(service.approve('REQ_1', 'M1')).rejects.toBeDefined();
+    expect(approvalLock.acquire).not.toHaveBeenCalled();
   });
 
   it('rejects pending request without calling submitUsage', async () => {

@@ -525,6 +525,7 @@ Failure examples:
 
 - `404 REQUEST_NOT_FOUND`
 - `409 REQUEST_NOT_APPROVABLE`
+- `409 APPROVAL_IN_PROGRESS` (another approval for the same employee/location is in progress; bounded wait exceeded)
 - `409 INSUFFICIENT_BALANCE`
 - `422 INVALID_DIMENSION`
 - `503 HCM_UNAVAILABLE`
@@ -896,6 +897,19 @@ Response:
 }
 ```
 
+### 14.6 Approval in progress
+
+When another `POST /time-off-requests/:requestId/approve` is already running the HCM validation + submission path for the same `(employeeId, locationId)`, callers may receive:
+
+```json
+{
+  "errorCode": "APPROVAL_IN_PROGRESS",
+  "message": "Another approval is in progress for this employee and location"
+}
+```
+
+HTTP status **`409`**. This uses the `approval_locks` table with a TTL; configure via `APPROVAL_LOCK_TTL_MS`, `APPROVAL_LOCK_ACQUIRE_TIMEOUT_MS`, and `APPROVAL_LOCK_RETRY_DELAY_MS`.
+
 ---
 
 ## 15. Defensive Validation
@@ -938,14 +952,14 @@ Employee has 5 days. Two requests for 3 days each are approved around the same t
 
 Solution:
 
-- Each approval re-checks HCM realtime balance.
-- HCM submit usage endpoint deducts from mock HCM source-of-truth balance.
-- If the second approval exceeds remaining HCM balance, it fails.
-- SQLite transaction protects local request status update.
+- **Per-resource lock:** Before calling HCM during approval, ReadyOn acquires a row in `approval_locks` keyed by `employeeId:locationId` (unique `lock_key`, TTL `expires_at`). Only one approval flow for that pair runs HCM `getBalance` + `submitTimeOffUsage` at a time; others wait briefly or receive `409 APPROVAL_IN_PROGRESS` after a bounded wait.
+- After the lock is acquired, the request row is re-read so concurrent transitions are observed.
+- Each approval still re-checks HCM realtime balance and relies on HCM as source of truth for deductions.
+- If the second approval exceeds remaining HCM balance after the first completes, it fails with insufficient balance as before.
 
 ### 16.3 SQLite Limitation
 
-SQLite has limited concurrent write behavior compared with production databases. For this take-home, transactions and idempotency are sufficient. In production, this design should move to PostgreSQL with row-level locking, stronger isolation, and possibly distributed locking or queue-based approval processing.
+SQLite has limited concurrent write behavior compared with production databases. The `approval_locks` mechanism serializes approval **logic** per employee/location within this process and database file; it does not replace distributed locking across multiple application instances. For this take-home, transactions, idempotency, and `approval_locks` are sufficient. In production, this design should move to PostgreSQL with stronger isolation and possibly row-level or advisory locks, plus queue-based approval processing if multiple ReadyOn nodes exist.
 
 ---
 
@@ -1149,6 +1163,8 @@ readyon-timeoff-service/
       dto/
     timeoff/
       time-off-request.entity.ts
+      approval-lock.entity.ts
+      approval-lock.service.ts
       timeoff.controller.ts
       timeoff.service.ts
       dto/
@@ -1165,6 +1181,7 @@ readyon-timeoff-service/
   test/
     unit/
       timeoff.service.spec.ts
+      approval-lock.service.spec.ts
       balances.service.spec.ts
     e2e/
       balance-sync.e2e-spec.ts

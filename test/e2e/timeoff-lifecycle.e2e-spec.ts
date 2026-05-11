@@ -446,4 +446,45 @@ describe('Time-off lifecycle (e2e)', () => {
       .send({ employeeId: 'E123' })
       .expect(409);
   });
+
+  it('concurrent approvals for same employee-location serialize via approval lock', async () => {
+    await seedHcm('E200', 'L200', 10);
+
+    const a = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E200',
+        locationId: 'L200',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const b = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E200',
+        locationId: 'L200',
+        requestedDays: 2,
+      })
+      .expect(200);
+
+    const [ra, rb] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${a.body.requestId}/approve`)
+        .send({ managerId: 'M1' }),
+      request(app.getHttpServer())
+        .post(`/time-off-requests/${b.body.requestId}/approve`)
+        .send({ managerId: 'M1' }),
+    ]);
+
+    expect(ra.status).toBe(200);
+    expect(rb.status).toBe(200);
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E200', locationId: 'L200' })
+      .expect(200);
+
+    expect(hcmBal.body.availableDays).toBe(6);
+  });
 });
