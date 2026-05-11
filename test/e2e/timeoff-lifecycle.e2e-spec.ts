@@ -4,6 +4,21 @@ import { MockHcmFailureMode } from '../../src/mock-hcm/mock-hcm-failure-mode';
 import { createE2eApp } from './setup-app';
 
 const e2eVerbose = process.env.E2E_VERBOSE === '1';
+let detailTestName = 'unknown test';
+let detailLines: string[] = [];
+/** Only the concurrency / race E2E tests emit buffered detail logs in E2E_VERBOSE mode. */
+let detailFlushEnabled = false;
+
+function isConcurrencyDetailTest(fullName: string): boolean {
+  const markers = [
+    'serialize via approval lock',
+    'two different requests for same employee/location: only one approval',
+    'two managers approve the same request concurrently',
+    'two managers reject the same request concurrently',
+    'one manager approves and another rejects the same request concurrently',
+  ];
+  return markers.some((m) => fullName.includes(m));
+}
 
 /** One-line summary of a Supertest response for verbose E2E logs. */
 function httpBrief(res: { status: number; body?: unknown }): string {
@@ -24,18 +39,16 @@ function httpBrief(res: { status: number; body?: unknown }): string {
 }
 
 const dlog = (title: string, lines?: string | readonly string[]) => {
-  if (!e2eVerbose) {
+  if (!e2eVerbose || !detailFlushEnabled) {
     return;
   }
-  // eslint-disable-next-line no-console -- E2E verbose trace only
-  console.log(`[e2e:detail] ▸ ${title}`);
+  detailLines.push(`▸ ${title}`);
   if (lines == null) {
     return;
   }
   const list = typeof lines === 'string' ? [lines] : [...lines];
   for (const line of list) {
-    // eslint-disable-next-line no-console -- E2E verbose trace only
-    console.log(`              ${line}`);
+    detailLines.push(`  ${line}`);
   }
 };
 
@@ -44,8 +57,11 @@ describe('Time-off lifecycle (e2e)', () => {
 
   beforeEach(async () => {
     if (e2eVerbose) {
-      const testName = expect.getState().currentTestName ?? 'unknown test';
-      console.log(`[e2e:detail] ${testName}`);
+      detailTestName = expect.getState().currentTestName ?? 'unknown test';
+      detailLines = [];
+      detailFlushEnabled = isConcurrencyDetailTest(detailTestName);
+    } else {
+      detailFlushEnabled = false;
     }
     app = await createE2eApp();
     await request(app.getHttpServer())
@@ -55,6 +71,21 @@ describe('Time-off lifecycle (e2e)', () => {
   });
 
   afterEach(async () => {
+    if (e2eVerbose) {
+      if (detailFlushEnabled && detailLines.length > 0) {
+        // One console call so Jest prints a single block (not one stack frame per line).
+        const block = [
+          `[e2e:detail] ${detailTestName}`,
+          ...detailLines.map((line) => `[e2e:detail] ${line}`),
+        ].join('\n');
+        // eslint-disable-next-line no-console -- E2E verbose trace only
+        console.log(block);
+      } else {
+        // Every other test: title only (no buffered detail lines).
+        // eslint-disable-next-line no-console -- E2E verbose trace only
+        console.log(`[e2e:detail] ${detailTestName}`);
+      }
+    }
     await app.close();
   });
 
@@ -484,7 +515,7 @@ describe('Time-off lifecycle (e2e)', () => {
   it('concurrent approvals for 2 request with same employee-location serialize via approval lock, the blance can fulfill both requests both requests', async () => {
     await seedHcm('E200', 'L200', 10);
 
-    if (e2eVerbose) {
+    if (detailFlushEnabled) {
       const before = await request(app.getHttpServer())
         .get('/mock-hcm/balances')
         .query({ employeeId: 'E200', locationId: 'L200' });
@@ -550,7 +581,7 @@ describe('Time-off lifecycle (e2e)', () => {
   it('two different requests for same employee/location: only one approval succeeds when balance fits one', async () => {
     await seedHcm('E200Y', 'L200Y', 3);
 
-    if (e2eVerbose) {
+    if (detailFlushEnabled) {
       const before = await request(app.getHttpServer())
         .get('/mock-hcm/balances')
         .query({ employeeId: 'E200Y', locationId: 'L200Y' });
@@ -618,7 +649,7 @@ describe('Time-off lifecycle (e2e)', () => {
   it('two managers approve the same request concurrently; second is idempotent', async () => {
     await seedHcm('E201', 'L201', 10);
 
-    if (e2eVerbose) {
+    if (detailFlushEnabled) {
       const before = await request(app.getHttpServer())
         .get('/mock-hcm/balances')
         .query({ employeeId: 'E201', locationId: 'L201' });
@@ -665,7 +696,7 @@ describe('Time-off lifecycle (e2e)', () => {
     expect(r2.body.status).toBe('APPROVED');
     expect(r1.body.hcmTransactionId).toBe(r2.body.hcmTransactionId);
 
-    if (e2eVerbose) {
+    if (detailFlushEnabled) {
       const getReq = await request(app.getHttpServer())
         .get(`/time-off-requests/${requestId}`)
         .expect(200);
@@ -692,7 +723,7 @@ describe('Time-off lifecycle (e2e)', () => {
   it('two managers reject the same request concurrently; ends REJECTED once', async () => {
     await seedHcm('E202', 'L202', 10);
 
-    if (e2eVerbose) {
+    if (detailFlushEnabled) {
       const before = await request(app.getHttpServer())
         .get('/mock-hcm/balances')
         .query({ employeeId: 'E202', locationId: 'L202' });
@@ -770,7 +801,7 @@ describe('Time-off lifecycle (e2e)', () => {
   it('one manager approves and another rejects the same request concurrently; exactly one wins', async () => {
     await seedHcm('E203', 'L203', 10);
 
-    if (e2eVerbose) {
+    if (detailFlushEnabled) {
       const before = await request(app.getHttpServer())
         .get('/mock-hcm/balances')
         .query({ employeeId: 'E203', locationId: 'L203' });
