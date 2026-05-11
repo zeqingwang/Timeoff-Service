@@ -66,12 +66,13 @@ npm test
 
 # End-to-end only (same app + SQLite + mock HCM HTTP)
 npm run test:e2e
-
+# End-to-end (include the details about concurrent tests)
+npm run test:e2e:detail
 # Coverage: unit + E2E combined (recommended for TRD proof)
 npm run test:cov
 ```
 
-Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **96%** lines, **96%** statements, **93%** functions, and **84%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
+Coverage is collected from `src/**/*.ts` while executing both `test/unit/**/*.spec.ts` and `test/e2e/**/*.e2e-spec.ts`. With the current suite, combined figures are approximately **97.4%** lines, **97%** statements, **94.6%** functions, and **84.5%** branches; open the HTML report under `coverage/` after `npm run test:cov` for file-level detail.
 
 ## Main APIs (ReadyOn)
 
