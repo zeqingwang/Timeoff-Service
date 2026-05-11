@@ -19,6 +19,8 @@ Backend service for employee time-off requests, cached balances, and synchroniza
 npm install
 ```
 
+Copy `.env.example` to `.env` in the project root if you want file-based config. At startup, `app.module` loads it via [dotenv](https://github.com/motdotla/dotenv) (`import 'dotenv/config'`). Values already set in your environment take precedence. You can still rely on defaults without a `.env` file.
+
 ## Run
 
 Development (watch mode):
