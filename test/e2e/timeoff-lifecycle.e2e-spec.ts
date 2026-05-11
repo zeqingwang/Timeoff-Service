@@ -121,6 +121,41 @@ describe('Time-off lifecycle (e2e)', () => {
     expect(created.body.requestId).toBeDefined();
   });
 
+  it('decimal requestedDays round-trip on create, GET, approve, and HCM balance', async () => {
+    await seedHcm('E-DEC-REQ', 'L-DEC-REQ', 9.5);
+    const requestedDays = 1.25;
+
+    const created = await request(app.getHttpServer())
+      .post('/time-off-requests')
+      .send({
+        employeeId: 'E-DEC-REQ',
+        locationId: 'L-DEC-REQ',
+        requestedDays,
+      })
+      .expect(200);
+
+    expect(created.body.status).toBe('PENDING_APPROVAL');
+    expect(created.body.requestedDays).toBeCloseTo(requestedDays, 4);
+
+    const fetched = await request(app.getHttpServer())
+      .get(`/time-off-requests/${created.body.requestId}`)
+      .expect(200);
+
+    expect(fetched.body.requestedDays).toBeCloseTo(requestedDays, 4);
+
+    await request(app.getHttpServer())
+      .post(`/time-off-requests/${created.body.requestId}/approve`)
+      .send({ managerId: 'M1' })
+      .expect(200);
+
+    const hcmBal = await request(app.getHttpServer())
+      .get('/mock-hcm/balances')
+      .query({ employeeId: 'E-DEC-REQ', locationId: 'L-DEC-REQ' })
+      .expect(200);
+
+    expect(hcmBal.body.availableDays).toBeCloseTo(9.5 - requestedDays, 4);
+  });
+
   it('create succeeds when ReadyOn cache is stale but HCM has enough balance', async () => {
     await seedHcm('E101', 'L101', 1);
     await request(app.getHttpServer())
