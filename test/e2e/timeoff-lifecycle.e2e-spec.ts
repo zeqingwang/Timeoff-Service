@@ -79,11 +79,11 @@ describe('Time-off lifecycle (e2e)', () => {
           `[e2e:detail] ${detailTestName}`,
           ...detailLines.map((line) => `[e2e:detail] ${line}`),
         ].join('\n');
-        // eslint-disable-next-line no-console -- E2E verbose trace only
+
         console.log(block);
       } else {
         // Every other test: title only (no buffered detail lines).
-        // eslint-disable-next-line no-console -- E2E verbose trace only
+
         console.log(`[e2e:detail] ${detailTestName}`);
       }
     }
@@ -548,99 +548,91 @@ describe('Time-off lifecycle (e2e)', () => {
       .expect(409);
   });
 
-  it(
-    'create succeeds after transient HCM TIMEOUT then retry succeeds',
-    async () => {
-      const prevT = process.env.HCM_TIMEOUT_MS;
-      process.env.HCM_TIMEOUT_MS = '1500';
-      try {
-        await seedHcm('E_TIMEOUT_CREATE', 'L_TIMEOUT_CREATE', 10);
+  it('create succeeds after transient HCM TIMEOUT then retry succeeds', async () => {
+    const prevT = process.env.HCM_TIMEOUT_MS;
+    process.env.HCM_TIMEOUT_MS = '1500';
+    try {
+      await seedHcm('E_TIMEOUT_CREATE', 'L_TIMEOUT_CREATE', 10);
 
-        await request(app.getHttpServer())
-          .post('/mock-hcm/test/failure-mode')
-          .send({ mode: MockHcmFailureMode.TIMEOUT })
-          .expect(200);
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.TIMEOUT })
+        .expect(200);
 
-        const fail = await request(app.getHttpServer())
-          .post('/time-off-requests')
-          .send({
-            employeeId: 'E_TIMEOUT_CREATE',
-            locationId: 'L_TIMEOUT_CREATE',
-            requestedDays: 1,
-          })
-          .expect(503);
-        expect(fail.body.errorCode).toBe(ErrorCodes.HCM_UNAVAILABLE);
+      const fail = await request(app.getHttpServer())
+        .post('/time-off-requests')
+        .send({
+          employeeId: 'E_TIMEOUT_CREATE',
+          locationId: 'L_TIMEOUT_CREATE',
+          requestedDays: 1,
+        })
+        .expect(503);
+      expect(fail.body.errorCode).toBe(ErrorCodes.HCM_UNAVAILABLE);
 
-        await request(app.getHttpServer())
-          .post('/mock-hcm/test/failure-mode')
-          .send({ mode: MockHcmFailureMode.NONE })
-          .expect(200);
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.NONE })
+        .expect(200);
 
-        const ok = await request(app.getHttpServer())
-          .post('/time-off-requests')
-          .send({
-            employeeId: 'E_TIMEOUT_CREATE',
-            locationId: 'L_TIMEOUT_CREATE',
-            requestedDays: 1,
-          })
-          .expect(200);
-        expect(ok.body.status).toBe('PENDING_APPROVAL');
-      } finally {
-        process.env.HCM_TIMEOUT_MS = prevT;
-      }
-    },
-    25_000,
-  );
+      const ok = await request(app.getHttpServer())
+        .post('/time-off-requests')
+        .send({
+          employeeId: 'E_TIMEOUT_CREATE',
+          locationId: 'L_TIMEOUT_CREATE',
+          requestedDays: 1,
+        })
+        .expect(200);
+      expect(ok.body.status).toBe('PENDING_APPROVAL');
+    } finally {
+      process.env.HCM_TIMEOUT_MS = prevT;
+    }
+  }, 25_000);
 
-  it(
-    'approve succeeds after transient HCM TIMEOUT on first attempt',
-    async () => {
-      const prevT = process.env.HCM_TIMEOUT_MS;
-      process.env.HCM_TIMEOUT_MS = '1500';
-      try {
-        await seedHcm('E_TIMEOUT_APPR', 'L_TIMEOUT_APPR', 10);
-        const created = await request(app.getHttpServer())
-          .post('/time-off-requests')
-          .send({
-            employeeId: 'E_TIMEOUT_APPR',
-            locationId: 'L_TIMEOUT_APPR',
-            requestedDays: 2,
-          })
-          .expect(200);
+  it('approve succeeds after transient HCM TIMEOUT on first attempt', async () => {
+    const prevT = process.env.HCM_TIMEOUT_MS;
+    process.env.HCM_TIMEOUT_MS = '1500';
+    try {
+      await seedHcm('E_TIMEOUT_APPR', 'L_TIMEOUT_APPR', 10);
+      const created = await request(app.getHttpServer())
+        .post('/time-off-requests')
+        .send({
+          employeeId: 'E_TIMEOUT_APPR',
+          locationId: 'L_TIMEOUT_APPR',
+          requestedDays: 2,
+        })
+        .expect(200);
 
-        const requestId = created.body.requestId as string;
+      const requestId = created.body.requestId as string;
 
-        await request(app.getHttpServer())
-          .post('/mock-hcm/test/failure-mode')
-          .send({ mode: MockHcmFailureMode.TIMEOUT })
-          .expect(200);
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.TIMEOUT })
+        .expect(200);
 
-        await request(app.getHttpServer())
-          .post(`/time-off-requests/${requestId}/approve`)
-          .send({ managerId: 'M1' })
-          .expect(503);
+      await request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M1' })
+        .expect(503);
 
-        const pending = await request(app.getHttpServer())
-          .get(`/time-off-requests/${requestId}`)
-          .expect(200);
-        expect(pending.body.status).toBe('PENDING_APPROVAL');
+      const pending = await request(app.getHttpServer())
+        .get(`/time-off-requests/${requestId}`)
+        .expect(200);
+      expect(pending.body.status).toBe('PENDING_APPROVAL');
 
-        await request(app.getHttpServer())
-          .post('/mock-hcm/test/failure-mode')
-          .send({ mode: MockHcmFailureMode.NONE })
-          .expect(200);
+      await request(app.getHttpServer())
+        .post('/mock-hcm/test/failure-mode')
+        .send({ mode: MockHcmFailureMode.NONE })
+        .expect(200);
 
-        const approved = await request(app.getHttpServer())
-          .post(`/time-off-requests/${requestId}/approve`)
-          .send({ managerId: 'M1' })
-          .expect(200);
-        expect(approved.body.status).toBe('APPROVED');
-      } finally {
-        process.env.HCM_TIMEOUT_MS = prevT;
-      }
-    },
-    35_000,
-  );
+      const approved = await request(app.getHttpServer())
+        .post(`/time-off-requests/${requestId}/approve`)
+        .send({ managerId: 'M1' })
+        .expect(200);
+      expect(approved.body.status).toBe('APPROVED');
+    } finally {
+      process.env.HCM_TIMEOUT_MS = prevT;
+    }
+  }, 35_000);
 
   it('GET /employees/:id/time-off-requests lists and filters by status and locationId', async () => {
     await seedHcm('E_LIST', 'L_LIST_A', 10);
@@ -681,10 +673,14 @@ describe('Time-off lifecycle (e2e)', () => {
       .query({ status: 'PENDING_APPROVAL' })
       .expect(200);
 
-    expect(pendingOnly.body.every((r: { status: string }) => r.status === 'PENDING_APPROVAL')).toBe(
+    const pendingRows = pendingOnly.body as Array<{
+      status: string;
+      requestId: string;
+    }>;
+    expect(pendingRows.every((r) => r.status === 'PENDING_APPROVAL')).toBe(
       true,
     );
-    expect(pendingOnly.body.some((r: { requestId: string }) => r.requestId === b.body.requestId)).toBe(
+    expect(pendingRows.some((r) => r.requestId === b.body.requestId)).toBe(
       true,
     );
 
@@ -693,7 +689,8 @@ describe('Time-off lifecycle (e2e)', () => {
       .query({ locationId: 'L_LIST_A' })
       .expect(200);
 
-    expect(locA.body.every((r: { locationId: string }) => r.locationId === 'L_LIST_A')).toBe(true);
+    const locRows = locA.body as Array<{ locationId: string }>;
+    expect(locRows.every((r) => r.locationId === 'L_LIST_A')).toBe(true);
   });
 
   it('GET /employees/:id/time-off-requests returns empty array for employee with no requests', async () => {
@@ -1175,7 +1172,9 @@ describe('Time-off lifecycle (e2e)', () => {
       'Expect one HTTP 200 and one HTTP 409 (loser)',
     ]);
 
-    const statuses = [approveRes.status, rejectRes.status].sort((a, b) => a - b);
+    const statuses = [approveRes.status, rejectRes.status].sort(
+      (a, b) => a - b,
+    );
     expect(statuses).toEqual([200, 409]);
 
     const get = await request(app.getHttpServer())

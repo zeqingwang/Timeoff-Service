@@ -9,7 +9,11 @@ import { HCM_CLIENT } from '../../src/hcm/hcm-client.interface';
 import type { HcmClient } from '../../src/hcm/hcm-client.interface';
 import { BalancesService } from '../../src/balances/balances.service';
 import { ApprovalLockService } from '../../src/timeoff/approval-lock.service';
-import { HttpException, ForbiddenException, ConflictException } from '@nestjs/common';
+import {
+  HttpException,
+  ForbiddenException,
+  ConflictException,
+} from '@nestjs/common';
 import { HcmSyncLogStatus, HcmSyncType } from '../../src/hcm/hcm-sync-types';
 import { ErrorCodes } from '../../src/common/error-codes';
 
@@ -395,7 +399,7 @@ describe('TimeOffService', () => {
       idempotencyKey: null,
       createdAt: new Date(),
       updatedAt: new Date(),
-    } as TimeOffRequest);
+    });
     hcm.getBalance.mockResolvedValue({
       type: 'transport',
       code: 'UNAVAILABLE',
@@ -429,7 +433,7 @@ describe('TimeOffService', () => {
       idempotencyKey: null,
       createdAt: new Date(),
       updatedAt: new Date(),
-    } as TimeOffRequest);
+    });
     hcm.getBalance.mockResolvedValue({
       type: 'transport',
       code: 'INVALID_RESPONSE',
@@ -616,7 +620,9 @@ describe('TimeOffService', () => {
 
   it('cancel throws when request not found', async () => {
     requestRepo.findOne.mockResolvedValue(null);
-    await expect(service.cancel('missing', 'E1')).rejects.toThrow(HttpException);
+    await expect(service.cancel('missing', 'E1')).rejects.toThrow(
+      HttpException,
+    );
   });
 
   it('approve idempotent returns remainingDays 0 when cache missing', async () => {
